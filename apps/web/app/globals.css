@@ -7,3 +7,32 @@
 body {
   @apply bg-zinc-950 text-zinc-100 antialiased;
 }
+
+/* ── Module card hover choreography (graph canvas) ──────────────────────────
+   Hovered card scales up; every other module card shrinks and blurs. The
+   :has() lives on the .react-flow root so it works regardless of how xyflow
+   nests its node wrappers. */
+.module-card {
+  transition:
+    transform 400ms ease,
+    filter 400ms ease,
+    box-shadow 400ms ease,
+    border-color 400ms ease,
+    background-color 400ms ease;
+  will-change: transform, filter;
+}
+
+.react-flow__node-module:hover {
+  z-index: 50 !important;
+}
+
+.react-flow__node-module:hover .module-card {
+  transform: scale(1.1);
+}
+
+.react-flow:has(.react-flow__node-module:hover)
+  .react-flow__node-module:not(:hover)
+  .module-card {
+  transform: scale(0.92);
+  filter: blur(4px);
+}

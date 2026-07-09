@@ -11,18 +11,21 @@ export type ModuleFlowNode = Node<{ module: ModuleNodeData; expanded: boolean },
 export type EndpointFlowNode = Node<{ endpoint: Endpoint; selected: boolean }, 'endpoint'>;
 export type CallFlowNode = Node<{ call: FrontendCall }, 'call'>;
 
-const KIND_STYLE: Record<string, { expanded: string; label: string }> = {
+const KIND_STYLE: Record<string, { expanded: string; label: string; glow: string }> = {
   'nest-module': {
     expanded: 'border-sky-500/60 bg-sky-950/60 shadow-lg shadow-sky-500/10',
     label: 'text-sky-500/80',
+    glow: 'hover:border-sky-400/60 hover:shadow-[0_0_40px_-6px_rgba(14,165,233,0.5)]',
   },
   'next-api-group': {
     expanded: 'border-emerald-500/60 bg-emerald-950/60 shadow-lg shadow-emerald-500/10',
     label: 'text-emerald-500/80',
+    glow: 'hover:border-emerald-400/60 hover:shadow-[0_0_40px_-6px_rgba(16,185,129,0.5)]',
   },
   'react-feature': {
     expanded: 'border-violet-500/60 bg-violet-950/60 shadow-lg shadow-violet-500/10',
     label: 'text-violet-400/80',
+    glow: 'hover:border-violet-400/60 hover:shadow-[0_0_40px_-6px_rgba(139,92,246,0.5)]',
   },
 };
 
@@ -31,8 +34,10 @@ export function ModuleGraphNode({ data }: NodeProps<ModuleFlowNode>) {
   const style = KIND_STYLE[mod.kind] ?? KIND_STYLE['nest-module'];
   return (
     <div
-      className={`flex h-16 w-60 cursor-pointer items-center justify-between rounded-xl border px-4 transition ${
-        expanded ? style.expanded : 'border-zinc-700 bg-zinc-900 hover:border-zinc-500'
+      className={`module-card flex h-16 w-60 cursor-pointer items-center justify-between rounded-xl border px-4 backdrop-blur-xl ${
+        expanded
+          ? style.expanded
+          : `border-[rgba(144,161,255,0.17)] bg-[rgba(65,65,65,0.11)] ${style.glow}`
       }`}
     >
       <div className="min-w-0">
