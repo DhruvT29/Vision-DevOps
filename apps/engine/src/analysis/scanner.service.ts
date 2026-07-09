@@ -3,6 +3,9 @@ import * as path from 'path';
 import type { DetectedStack, SnapshotStats } from '@vision/shared';
 import { PrismaService } from '../prisma/prisma.service';
 import { NestExtractorService } from './nest-extractor.service';
+import { NextExtractorService } from './next-extractor.service';
+import { FrontendExtractorService } from './frontend-extractor.service';
+import { linkCallsToEndpoints } from './linker';
 
 /**
  * Orchestrates a scan for one snapshot: run extractors per detected stack,
@@ -16,6 +19,8 @@ export class ScannerService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly nestExtractor: NestExtractorService,
+    private readonly nextExtractor: NextExtractorService,
+    private readonly frontendExtractor: FrontendExtractorService,
   ) {}
 
   /** Kick off a scan without awaiting it. */
@@ -38,11 +43,46 @@ export class ScannerService {
 
     let moduleCount = 0;
     let endpointCount = 0;
+    let frontendCallCount = 0;
+    let edgeCount = 0;
+
+    // endpoint rows created this scan, for the cross-layer linker
+    const createdEndpoints: { id: string; method: string; fullPath: string }[] = [];
+    const createdCalls: { id: string; method: string; resolvedPath: string | null }[] = [];
 
     for (const stack of stacks) {
-      if (stack.kind !== 'nest') continue; // next/react extractors land in Phase 5
       const stackDir = path.resolve(rootPath, stack.dir);
-      const extraction = this.nestExtractor.extract(stackDir);
+
+      // React/Next frontends: collect HTTP call sites
+      if (stack.kind === 'react' || stack.kind === 'next') {
+        const calls = this.frontendExtractor.extract(stackDir);
+        for (const call of calls) {
+          const row = await this.prisma.frontendCall.create({
+            data: {
+              snapshotId,
+              client: call.client,
+              method: call.method,
+              rawUrl: call.rawUrl,
+              resolvedPath: call.resolvedPath,
+              callerSymbol: call.callerSymbol,
+              filePath: call.filePath,
+              line: call.line,
+            },
+          });
+          createdCalls.push({ id: row.id, method: call.method, resolvedPath: call.resolvedPath });
+          frontendCallCount++;
+        }
+      }
+
+      const extraction =
+        stack.kind === 'nest'
+          ? this.nestExtractor.extract(stackDir)
+          : stack.kind === 'next'
+            ? { globalPrefix: null, ...this.nextExtractor.extract(stackDir) }
+            : null;
+      if (!extraction) continue;
+      const layer = stack.kind === 'nest' ? 'nest' : 'next-api';
+      const moduleKind = stack.kind === 'nest' ? 'nest-module' : 'next-api-group';
 
       // controller class name → module
       const controllerToModule = new Map<string, string>();
@@ -57,7 +97,7 @@ export class ScannerService {
         let id = moduleRowIds.get(name);
         if (!id) {
           const row = await this.prisma.moduleNode.create({
-            data: { snapshotId, name, kind: 'nest-module', filePath },
+            data: { snapshotId, name, kind: moduleKind, filePath },
           });
           id = row.id;
           moduleRowIds.set(name, id);
@@ -76,10 +116,10 @@ export class ScannerService {
         const moduleId = await moduleRowFor(moduleName, moduleFile);
 
         for (const ep of controller.endpoints) {
-          await this.prisma.endpoint.create({
+          const row = await this.prisma.endpoint.create({
             data: {
               moduleId,
-              layer: 'nest',
+              layer,
               method: ep.method,
               fullPath: ep.fullPath,
               handlerName: ep.handlerName,
@@ -91,16 +131,32 @@ export class ScannerService {
               line: ep.line,
             },
           });
+          createdEndpoints.push({ id: row.id, method: ep.method, fullPath: ep.fullPath });
           endpointCount++;
         }
       }
     }
 
+    // Cross-layer linking: frontend call sites → backend endpoints
+    const links = linkCallsToEndpoints(createdCalls, createdEndpoints);
+    for (const link of links) {
+      await this.prisma.graphEdge.create({
+        data: {
+          snapshotId,
+          sourceId: link.sourceId,
+          targetId: link.targetId,
+          type: 'calls',
+          confidence: link.confidence,
+        },
+      });
+      edgeCount++;
+    }
+
     const stats: SnapshotStats = {
       modules: moduleCount,
       endpoints: endpointCount,
-      frontendCalls: 0,
-      edges: 0,
+      frontendCalls: frontendCallCount,
+      edges: edgeCount,
       durationMs: Date.now() - started,
     };
 
@@ -109,7 +165,8 @@ export class ScannerService {
       data: { status: 'completed', statsJson: JSON.stringify(stats) },
     });
     this.logger.log(
-      `Scan ${snapshotId} completed: ${moduleCount} modules, ${endpointCount} endpoints in ${stats.durationMs}ms`,
+      `Scan ${snapshotId} completed: ${moduleCount} modules, ${endpointCount} endpoints, ` +
+        `${frontendCallCount} frontend calls, ${edgeCount} call edges in ${stats.durationMs}ms`,
     );
   }
 }

@@ -1,7 +1,7 @@
 'use client';
 
 import { Handle, Position, type NodeProps, type Node } from '@xyflow/react';
-import type { Endpoint, ModuleNode as ModuleNodeData } from '@vision/shared';
+import type { Endpoint, FrontendCall, ModuleNode as ModuleNodeData } from '@vision/shared';
 import { methodBadge } from '@/lib/method-colors';
 
 export const MODULE_NODE_SIZE = { width: 240, height: 64 };
@@ -9,27 +9,73 @@ export const ENDPOINT_NODE_SIZE = { width: 300, height: 48 };
 
 export type ModuleFlowNode = Node<{ module: ModuleNodeData; expanded: boolean }, 'module'>;
 export type EndpointFlowNode = Node<{ endpoint: Endpoint; selected: boolean }, 'endpoint'>;
+export type CallFlowNode = Node<{ call: FrontendCall }, 'call'>;
+
+const KIND_STYLE: Record<string, { expanded: string; label: string }> = {
+  'nest-module': {
+    expanded: 'border-sky-500/60 bg-sky-950/60 shadow-lg shadow-sky-500/10',
+    label: 'text-sky-500/80',
+  },
+  'next-api-group': {
+    expanded: 'border-emerald-500/60 bg-emerald-950/60 shadow-lg shadow-emerald-500/10',
+    label: 'text-emerald-500/80',
+  },
+  'react-feature': {
+    expanded: 'border-violet-500/60 bg-violet-950/60 shadow-lg shadow-violet-500/10',
+    label: 'text-violet-400/80',
+  },
+};
 
 export function ModuleGraphNode({ data }: NodeProps<ModuleFlowNode>) {
   const { module: mod, expanded } = data;
+  const style = KIND_STYLE[mod.kind] ?? KIND_STYLE['nest-module'];
   return (
     <div
       className={`flex h-16 w-60 cursor-pointer items-center justify-between rounded-xl border px-4 transition ${
-        expanded
-          ? 'border-sky-500/60 bg-sky-950/60 shadow-lg shadow-sky-500/10'
-          : 'border-zinc-700 bg-zinc-900 hover:border-zinc-500'
+        expanded ? style.expanded : 'border-zinc-700 bg-zinc-900 hover:border-zinc-500'
       }`}
     >
       <div className="min-w-0">
         <div className="truncate text-sm font-semibold text-zinc-100">
           {mod.name.replace(/Module$/, '')}
         </div>
-        <div className="text-[10px] uppercase tracking-wider text-zinc-500">{mod.kind}</div>
+        <div className={`text-[10px] uppercase tracking-wider ${style.label}`}>{mod.kind}</div>
       </div>
       <span className="ml-2 rounded-full bg-zinc-800 px-2 py-0.5 text-xs font-medium text-zinc-300">
         {mod.endpointCount}
       </span>
-      <Handle type="source" position={Position.Right} className="!bg-zinc-600" />
+      {mod.kind === 'react-feature' ? (
+        <Handle type="source" position={Position.Right} className="!bg-violet-600" />
+      ) : (
+        <>
+          <Handle type="target" position={Position.Left} className="!bg-zinc-600" />
+          <Handle type="source" position={Position.Right} className="!bg-zinc-600" />
+        </>
+      )}
+    </div>
+  );
+}
+
+export function CallGraphNode({ data }: NodeProps<CallFlowNode>) {
+  const { call } = data;
+  return (
+    <div
+      className="flex h-12 w-[300px] cursor-pointer items-center gap-2 rounded-lg border border-violet-900/60 bg-violet-950/30 px-3 transition hover:border-violet-500/60"
+      title={`${call.callerSymbol} — click to jump to the backend endpoint`}
+    >
+      <Handle type="target" position={Position.Left} className="!bg-violet-600" />
+      <span
+        className={`rounded border px-1.5 py-0.5 font-mono text-[10px] font-bold ${methodBadge(call.method)}`}
+      >
+        {call.method}
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="truncate font-mono text-[11px] text-zinc-300">
+          {call.resolvedPath ?? call.rawUrl}
+        </div>
+        <div className="truncate text-[9px] text-violet-400/70">{call.callerSymbol}</div>
+      </div>
+      <Handle type="source" position={Position.Right} className="!bg-violet-600" />
     </div>
   );
 }
@@ -66,4 +112,5 @@ export function EndpointGraphNode({ data }: NodeProps<EndpointFlowNode>) {
 export const nodeTypes = {
   module: ModuleGraphNode,
   endpoint: EndpointGraphNode,
+  call: CallGraphNode,
 };

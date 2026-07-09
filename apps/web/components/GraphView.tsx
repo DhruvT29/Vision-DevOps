@@ -87,11 +87,16 @@ export function GraphView({ snapshotId }: { snapshotId: string }) {
     [search],
   );
 
+  const [showFrontend, setShowFrontend] = useState(true);
+
   const { nodes, edges } = useMemo(() => {
     if (!graph) return { nodes: [] as Node[], edges: [] as Edge[] };
 
     const nodes: Node[] = [];
     const edges: Edge[] = [];
+    const renderedEndpoints = new Set<string>();
+    const renderedModules = new Set<string>();
+    const endpointToModule = new Map(graph.endpoints.map((e) => [e.id, e.moduleId]));
 
     for (const mod of graph.modules) {
       const modEndpoints = graph.endpoints.filter((e) => e.moduleId === mod.id);
@@ -106,6 +111,7 @@ export function GraphView({ snapshotId }: { snapshotId: string }) {
         position: { x: 0, y: 0 },
         data: { module: mod, expanded: isExpanded },
       });
+      renderedModules.add(mod.id);
 
       if (!isExpanded) continue;
       for (const ep of modEndpoints) {
@@ -116,6 +122,7 @@ export function GraphView({ snapshotId }: { snapshotId: string }) {
           position: { x: 0, y: 0 },
           data: { endpoint: ep, selected: ep.id === selectedId },
         });
+        renderedEndpoints.add(ep.id);
         edges.push({
           id: `${mod.id}->${ep.id}`,
           source: mod.id,
@@ -125,21 +132,103 @@ export function GraphView({ snapshotId }: { snapshotId: string }) {
       }
     }
 
-    return { nodes: layoutGraph(nodes, edges), edges };
-  }, [graph, expanded, selectedId, matchesSearch]);
+    // ── Frontend layer: call sites grouped per source file ──────────────────
+    if (showFrontend && graph.frontendCalls.length > 0) {
+      const groups = new Map<string, typeof graph.frontendCalls>();
+      for (const call of graph.frontendCalls) {
+        const searchable = `${call.resolvedPath ?? call.rawUrl} ${call.callerSymbol}`;
+        if (!matchesSearch(searchable) && search !== '') continue;
+        const list = groups.get(call.filePath) ?? [];
+        list.push(call);
+        groups.set(call.filePath, list);
+      }
 
-  const onNodeClick: NodeMouseHandler = useCallback((_, node) => {
-    if (node.type === 'module') {
-      setExpanded((prev) => {
-        const next = new Set(prev);
-        if (next.has(node.id)) next.delete(node.id);
-        else next.add(node.id);
-        return next;
-      });
-    } else if (node.type === 'endpoint') {
-      setSelectedId((prev) => (prev === node.id ? null : node.id));
+      const renderedCalls = new Set<string>();
+      for (const [filePath, calls] of groups) {
+        const stem = filePath.split(/[\\/]/).pop()?.replace(/\.(jsx?|tsx?)$/, '') ?? filePath;
+        const groupId = `fe:${filePath}`;
+        const isExpanded = expanded.has(groupId);
+        nodes.push({
+          id: groupId,
+          type: 'module',
+          position: { x: 0, y: 0 },
+          data: {
+            module: {
+              id: groupId,
+              snapshotId: graph.snapshot.id,
+              name: stem,
+              kind: 'react-feature',
+              filePath,
+              endpointCount: calls.length,
+            },
+            expanded: isExpanded,
+          },
+        });
+        if (!isExpanded) continue;
+        for (const call of calls) {
+          nodes.push({
+            id: call.id,
+            type: 'call',
+            position: { x: 0, y: 0 },
+            data: { call },
+          });
+          renderedCalls.add(call.id);
+          edges.push({
+            id: `${groupId}->${call.id}`,
+            source: groupId,
+            target: call.id,
+            style: { stroke: '#4c1d95' },
+          });
+        }
+      }
+
+      // cross-layer calls edges: call → endpoint (or its module when collapsed)
+      for (const edge of graph.edges) {
+        if (edge.type !== 'calls' || !renderedCalls.has(edge.sourceId)) continue;
+        const target = renderedEndpoints.has(edge.targetId)
+          ? edge.targetId
+          : endpointToModule.get(edge.targetId);
+        if (!target || (!renderedEndpoints.has(target) && !renderedModules.has(target))) continue;
+        edges.push({
+          id: edge.id,
+          source: edge.sourceId,
+          target,
+          animated: true,
+          style: {
+            stroke: '#8b5cf6',
+            opacity: Math.max(0.35, edge.confidence),
+            strokeDasharray: edge.confidence < 0.9 ? '6 3' : undefined,
+          },
+        });
+      }
     }
-  }, []);
+
+    return { nodes: layoutGraph(nodes, edges), edges };
+  }, [graph, expanded, selectedId, matchesSearch, showFrontend, search]);
+
+  const onNodeClick: NodeMouseHandler = useCallback(
+    (_, node) => {
+      if (node.type === 'module') {
+        setExpanded((prev) => {
+          const next = new Set(prev);
+          if (next.has(node.id)) next.delete(node.id);
+          else next.add(node.id);
+          return next;
+        });
+      } else if (node.type === 'endpoint') {
+        setSelectedId((prev) => (prev === node.id ? null : node.id));
+      } else if (node.type === 'call') {
+        // jump to the linked backend endpoint: expand its module + select it
+        const link = graph?.edges.find((e) => e.type === 'calls' && e.sourceId === node.id);
+        if (!link) return;
+        const endpoint = endpointById.get(link.targetId);
+        if (!endpoint) return;
+        setExpanded((prev) => new Set(prev).add(endpoint.moduleId));
+        setSelectedId(endpoint.id);
+      }
+    },
+    [graph, endpointById],
+  );
 
   const selectedEndpoint = selectedId ? endpointById.get(selectedId) : undefined;
 
@@ -191,7 +280,21 @@ export function GraphView({ snapshotId }: { snapshotId: string }) {
           />
           <span className="text-xs text-zinc-500">
             {graph.snapshot.stats?.modules} modules · {graph.snapshot.stats?.endpoints} endpoints
+            {(graph.snapshot.stats?.frontendCalls ?? 0) > 0 &&
+              ` · ${graph.snapshot.stats?.frontendCalls} calls`}
           </span>
+          {(graph.snapshot.stats?.frontendCalls ?? 0) > 0 && (
+            <button
+              onClick={() => setShowFrontend((s) => !s)}
+              className={`rounded-lg border px-3 py-1.5 text-xs transition ${
+                showFrontend
+                  ? 'border-violet-500/50 bg-violet-950/50 text-violet-300'
+                  : 'border-zinc-800 text-zinc-500 hover:border-zinc-600'
+              }`}
+            >
+              Frontend
+            </button>
+          )}
           <button
             onClick={() =>
               setExpanded((prev) =>
