@@ -23,6 +23,8 @@ model Project {
   snapshots          Snapshot[]
   environments       Environment[]
   executions         Execution[]
+  collections        Collection[]
+  scenarios          Scenario[]
 }
 
 model Snapshot {
@@ -120,6 +122,71 @@ model Execution {
 
   @@index([projectId, createdAt])
   @@index([endpointId])
+}
+
+model Collection {
+  id        String         @id @default(cuid())
+  projectId String
+  project   Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  parentId  String? // nested collections act as folders
+  name      String
+  createdAt DateTime       @default(now())
+  requests  SavedRequest[]
+
+  @@index([projectId])
+}
+
+model SavedRequest {
+  id           String         @id @default(cuid())
+  collectionId String
+  collection   Collection     @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  name         String
+  endpointId   String? // loose ref to the snapshot endpoint it came from
+  method       String
+  url          String // path or absolute, may contain {{vars}}
+  headersJson  String         @default("{}")
+  body         String?
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+  assertions   Assertion[]
+  steps        ScenarioStep[]
+
+  @@index([collectionId])
+}
+
+model Assertion {
+  id             String       @id @default(cuid())
+  savedRequestId String
+  savedRequest   SavedRequest @relation(fields: [savedRequestId], references: [id], onDelete: Cascade)
+  type           String // status | jsonPath | header | responseTime
+  pathExpr       String? // dot path for jsonPath, header name for header
+  operator       String // eq | neq | lt | gt | contains | exists
+  expected       String?
+
+  @@index([savedRequestId])
+}
+
+model Scenario {
+  id        String         @id @default(cuid())
+  projectId String
+  project   Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name      String
+  createdAt DateTime       @default(now())
+  steps     ScenarioStep[]
+
+  @@index([projectId])
+}
+
+model ScenarioStep {
+  id              String       @id @default(cuid())
+  scenarioId      String
+  scenario        Scenario     @relation(fields: [scenarioId], references: [id], onDelete: Cascade)
+  savedRequestId  String
+  savedRequest    SavedRequest @relation(fields: [savedRequestId], references: [id], onDelete: Cascade)
+  order           Int
+  extractionsJson String       @default("[]") // [{ name, pathExpr }] response → runtime vars
+
+  @@index([scenarioId])
 }
 
 model GraphEdge {

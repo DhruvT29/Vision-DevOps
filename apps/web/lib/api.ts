@@ -1,4 +1,6 @@
 import type {
+  CollectionsPayload,
+  CollectionSummary,
   EnvironmentSummary,
   ExecutionSummary,
   GraphPayload,
@@ -6,8 +8,15 @@ import type {
   ProjectSummary,
   RunRequest,
   RunResult,
+  RunSavedRequestResult,
+  SavedRequestSummary,
+  ScenarioRunResult,
+  ScenarioStepSummary,
+  ScenarioSummary,
   SnapshotSummary,
   UpsertEnvironmentRequest,
+  UpsertSavedRequest,
+  VariableExtraction,
 } from '@vision/shared';
 
 const ENGINE = process.env.NEXT_PUBLIC_ENGINE_URL ?? 'http://localhost:4000';
@@ -55,4 +64,63 @@ export const api = {
     req<ExecutionSummary[]>(
       `/projects/${projectId}/executions${endpointId ? `?endpointId=${endpointId}` : ''}`,
     ),
+
+  collections: (projectId: string) =>
+    req<CollectionsPayload>(`/projects/${projectId}/collections`),
+  createCollection: (projectId: string, name: string, parentId?: string) =>
+    req<CollectionSummary>(`/projects/${projectId}/collections`, {
+      method: 'POST',
+      body: JSON.stringify({ name, parentId }),
+    }),
+  deleteCollection: (id: string) =>
+    req<void>(`/collections/${id}`, { method: 'DELETE' }),
+  createRequest: (collectionId: string, body: UpsertSavedRequest) =>
+    req<SavedRequestSummary>(`/collections/${collectionId}/requests`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  updateRequest: (id: string, body: UpsertSavedRequest) =>
+    req<SavedRequestSummary>(`/requests/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+  deleteRequest: (id: string) => req<void>(`/requests/${id}`, { method: 'DELETE' }),
+  runSavedRequest: (id: string, environmentId?: string) =>
+    req<RunSavedRequestResult>(`/requests/${id}/run`, {
+      method: 'POST',
+      body: JSON.stringify({ environmentId }),
+    }),
+
+  scenarios: (projectId: string) => req<ScenarioSummary[]>(`/projects/${projectId}/scenarios`),
+  createScenario: (projectId: string, name: string) =>
+    req<ScenarioSummary>(`/projects/${projectId}/scenarios`, {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    }),
+  deleteScenario: (id: string) => req<void>(`/scenarios/${id}`, { method: 'DELETE' }),
+  addScenarioStep: (
+    scenarioId: string,
+    savedRequestId: string,
+    extractions: VariableExtraction[],
+  ) =>
+    req<ScenarioStepSummary>(`/scenarios/${scenarioId}/steps`, {
+      method: 'POST',
+      body: JSON.stringify({ savedRequestId, extractions }),
+    }),
+  deleteScenarioStep: (id: string) =>
+    req<void>(`/scenario-steps/${id}`, { method: 'DELETE' }),
+  runScenario: (id: string, environmentId?: string) =>
+    req<ScenarioRunResult>(`/scenarios/${id}/run`, {
+      method: 'POST',
+      body: JSON.stringify({ environmentId }),
+    }),
 };
+
+/** Cross-component refresh signal (e.g. TestPane saved a request → sidebar reloads). */
+export function emitCollectionsChanged() {
+  window.dispatchEvent(new Event('vision:collections-changed'));
+}
+export function onCollectionsChanged(handler: () => void): () => void {
+  window.addEventListener('vision:collections-changed', handler);
+  return () => window.removeEventListener('vision:collections-changed', handler);
+}

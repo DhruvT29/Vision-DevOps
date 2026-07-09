@@ -16,7 +16,7 @@ export class RunnerService {
 
   constructor(private readonly prisma: PrismaService) {}
 
-  async run(dto: RunRequestDto): Promise<RunResult> {
+  async run(dto: RunRequestDto, extraVars: Record<string, string> = {}): Promise<RunResult> {
     const env = dto.environmentId
       ? await this.prisma.environment.findUnique({ where: { id: dto.environmentId } })
       : null;
@@ -30,6 +30,8 @@ export class RunnerService {
       variables.baseUrl = env.baseUrl;
       if (auth.token) variables.token = auth.token;
     }
+    // runtime vars (scenario chaining) override environment vars
+    Object.assign(variables, extraVars);
 
     // Resolve URL: interpolate variables, then prefix baseUrl for bare paths.
     let url = this.interpolate(dto.url, variables);

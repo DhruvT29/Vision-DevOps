@@ -3,12 +3,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type {
   BodyField,
+  CollectionSummary,
   Endpoint,
   EnvironmentSummary,
   ExecutionSummary,
   RunResult,
 } from '@vision/shared';
-import { api } from '@/lib/api';
+import { api, emitCollectionsChanged } from '@/lib/api';
 import { methodBadge } from '@/lib/method-colors';
 
 function exampleValue(f: BodyField): unknown {
@@ -34,12 +35,17 @@ function exampleBody(fields: BodyField[] | null): string {
   return JSON.stringify(obj, null, 2);
 }
 
-export function TestPane({ endpoint, projectId }: { endpoint: Endpoint; projectId: string }) {
-  const [envs, setEnvs] = useState<EnvironmentSummary[]>([]);
-  const [envId, setEnvId] = useState<string>('');
-  const [showNewEnv, setShowNewEnv] = useState(false);
-  const [newEnv, setNewEnv] = useState({ name: '', baseUrl: '', token: '' });
-
+export function TestPane({
+  endpoint,
+  projectId,
+  envs,
+  envId,
+}: {
+  endpoint: Endpoint;
+  projectId: string;
+  envs: EnvironmentSummary[];
+  envId: string;
+}) {
   const pathParams = useMemo(
     () => endpoint.params.filter((p) => p.source === 'path'),
     [endpoint],
@@ -55,19 +61,17 @@ export function TestPane({ endpoint, projectId }: { endpoint: Endpoint; projectI
   const [result, setResult] = useState<RunResult | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
   const [history, setHistory] = useState<ExecutionSummary[]>([]);
-
-  const loadEnvs = useCallback(async () => {
-    const list = await api.listEnvironments(projectId);
-    setEnvs(list);
-    if (list.length > 0) setEnvId((prev) => prev || list[0].id);
-  }, [projectId]);
+  const [saveOpen, setSaveOpen] = useState(false);
+  const [collections, setCollections] = useState<CollectionSummary[]>([]);
+  const [saveTo, setSaveTo] = useState('');
+  const [saveName, setSaveName] = useState('');
+  const [saved, setSaved] = useState(false);
 
   const loadHistory = useCallback(async () => {
     setHistory(await api.executions(projectId, endpoint.id).catch(() => []));
   }, [projectId, endpoint.id]);
 
   useEffect(() => {
-    loadEnvs().catch(() => {});
     loadHistory();
     // reset per-endpoint state when the selected endpoint changes
     setPathValues({});
@@ -75,7 +79,9 @@ export function TestPane({ endpoint, projectId }: { endpoint: Endpoint; projectI
     setBody(exampleBody(endpoint.bodyFields));
     setResult(null);
     setSendError(null);
-  }, [endpoint.id, loadEnvs, loadHistory, endpoint.bodyFields]);
+    setSaveOpen(false);
+    setSaved(false);
+  }, [endpoint.id, loadHistory, endpoint.bodyFields]);
 
   const resolvedPath = useMemo(() => {
     let p = endpoint.fullPath;
@@ -91,18 +97,36 @@ export function TestPane({ endpoint, projectId }: { endpoint: Endpoint; projectI
   }, [endpoint.fullPath, pathParams, pathValues, queryValues]);
 
   const hasBody = endpoint.method !== 'GET' && endpoint.method !== 'HEAD';
+  const activeEnv = envs.find((e) => e.id === envId);
 
-  async function createEnv() {
-    if (!newEnv.name || !newEnv.baseUrl) return;
-    const created = await api.createEnvironment(projectId, {
-      name: newEnv.name,
-      baseUrl: newEnv.baseUrl,
-      auth: newEnv.token ? { type: 'bearer', token: newEnv.token } : { type: 'none' },
+  async function openSave() {
+    if (!saveOpen) {
+      const payload = await api.collections(projectId).catch(() => ({ collections: [], requests: [] }));
+      setCollections(payload.collections);
+      setSaveTo(payload.collections[0]?.id ?? '');
+      setSaveName(`${endpoint.method} ${endpoint.fullPath}`);
+    }
+    setSaveOpen(!saveOpen);
+    setSaved(false);
+  }
+
+  async function saveToCollection() {
+    let collectionId = saveTo;
+    if (!collectionId) {
+      const created = await api.createCollection(projectId, 'default');
+      collectionId = created.id;
+    }
+    await api.createRequest(collectionId, {
+      name: saveName || `${endpoint.method} ${endpoint.fullPath}`,
+      endpointId: endpoint.id,
+      method: endpoint.method,
+      url: resolvedPath,
+      body: hasBody && body.trim() ? body : undefined,
+      assertions: [{ type: 'status', operator: 'lt', expected: '400' }],
     });
-    setShowNewEnv(false);
-    setNewEnv({ name: '', baseUrl: '', token: '' });
-    await loadEnvs();
-    setEnvId(created.id);
+    emitCollectionsChanged();
+    setSaveOpen(false);
+    setSaved(true);
   }
 
   async function send() {
@@ -138,69 +162,17 @@ export function TestPane({ endpoint, projectId }: { endpoint: Endpoint; projectI
 
   return (
     <div className="flex flex-col gap-5">
-      {/* Environment */}
-      <section className="flex flex-col gap-2">
-        <div className="flex items-center justify-between">
-          <h3 className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
-            Environment
-          </h3>
-          <button
-            onClick={() => setShowNewEnv((s) => !s)}
-            className="text-xs text-sky-400 hover:underline"
-          >
-            {showNewEnv ? 'cancel' : '+ new'}
-          </button>
-        </div>
-        {envs.length > 0 && !showNewEnv && (
-          <select
-            value={envId}
-            onChange={(e) => setEnvId(e.target.value)}
-            className="rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm outline-none focus:border-zinc-600"
-          >
-            {envs.map((e) => (
-              <option key={e.id} value={e.id}>
-                {e.name} — {e.baseUrl}
-              </option>
-            ))}
-          </select>
+      {/* Active environment (managed in the toolbar) */}
+      <div className="flex items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-900/50 px-3 py-2 text-xs">
+        <span className="text-zinc-500">env:</span>
+        {activeEnv ? (
+          <span className="font-mono text-zinc-300">
+            {activeEnv.name} — {activeEnv.baseUrl}
+          </span>
+        ) : (
+          <span className="text-zinc-500">none — pick one in the toolbar ↗</span>
         )}
-        {envs.length === 0 && !showNewEnv && (
-          <p className="text-xs text-zinc-500">
-            No environments yet — create one to point at your running app.
-          </p>
-        )}
-        {showNewEnv && (
-          <div className="flex flex-col gap-2 rounded-lg border border-zinc-800 bg-zinc-900/60 p-3">
-            <input
-              placeholder="name (e.g. local)"
-              value={newEnv.name}
-              onChange={(e) => setNewEnv({ ...newEnv, name: e.target.value })}
-              className="rounded border border-zinc-800 bg-zinc-950 px-2.5 py-1.5 text-sm outline-none focus:border-zinc-600"
-            />
-            <input
-              placeholder="base URL (e.g. http://localhost:8001)"
-              value={newEnv.baseUrl}
-              onChange={(e) => setNewEnv({ ...newEnv, baseUrl: e.target.value })}
-              spellCheck={false}
-              className="rounded border border-zinc-800 bg-zinc-950 px-2.5 py-1.5 font-mono text-sm outline-none focus:border-zinc-600"
-            />
-            <input
-              placeholder="bearer token (optional)"
-              value={newEnv.token}
-              onChange={(e) => setNewEnv({ ...newEnv, token: e.target.value })}
-              spellCheck={false}
-              className="rounded border border-zinc-800 bg-zinc-950 px-2.5 py-1.5 font-mono text-sm outline-none focus:border-zinc-600"
-            />
-            <button
-              onClick={createEnv}
-              disabled={!newEnv.name || !newEnv.baseUrl}
-              className="rounded bg-zinc-100 px-3 py-1.5 text-sm font-semibold text-zinc-900 disabled:opacity-40"
-            >
-              Create
-            </button>
-          </div>
-        )}
-      </section>
+      </div>
 
       {/* Request */}
       <section className="flex flex-col gap-2">
@@ -255,13 +227,54 @@ export function TestPane({ endpoint, projectId }: { endpoint: Endpoint; projectI
           />
         )}
 
-        <button
-          onClick={send}
-          disabled={sending || (!envId && !resolvedPath.startsWith('http'))}
-          className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:opacity-40"
-        >
-          {sending ? 'Sending…' : 'Send'}
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={send}
+            disabled={sending || (!envId && !resolvedPath.startsWith('http'))}
+            className="flex-1 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:opacity-40"
+          >
+            {sending ? 'Sending…' : 'Send'}
+          </button>
+          <button
+            onClick={openSave}
+            className="rounded-lg border border-zinc-700 px-4 py-2 text-sm text-zinc-300 transition hover:border-zinc-500"
+          >
+            {saved ? 'Saved ✓' : 'Save'}
+          </button>
+        </div>
+        {saveOpen && (
+          <div className="flex flex-col gap-2 rounded-lg border border-zinc-800 bg-zinc-900/60 p-3">
+            <input
+              value={saveName}
+              onChange={(e) => setSaveName(e.target.value)}
+              placeholder="request name"
+              className="rounded border border-zinc-800 bg-zinc-950 px-2.5 py-1.5 text-xs outline-none focus:border-zinc-600"
+            />
+            {collections.length > 0 ? (
+              <select
+                value={saveTo}
+                onChange={(e) => setSaveTo(e.target.value)}
+                className="rounded border border-zinc-800 bg-zinc-950 px-2.5 py-1.5 text-xs outline-none focus:border-zinc-600"
+              >
+                {collections.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <p className="text-[11px] text-zinc-500">
+                No collections — will create one named &quot;default&quot;.
+              </p>
+            )}
+            <button
+              onClick={saveToCollection}
+              className="rounded bg-zinc-100 px-3 py-1.5 text-xs font-semibold text-zinc-900"
+            >
+              Save to collection
+            </button>
+          </div>
+        )}
         {!envId && (
           <p className="text-[11px] text-zinc-500">Select or create an environment to send.</p>
         )}

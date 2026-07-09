@@ -217,6 +217,107 @@ export interface ExecutionSummary {
   createdAt: string; // ISO
 }
 
+// ── Collections, assertions, scenarios ──────────────────────────────────────
+
+export type AssertionType = 'status' | 'jsonPath' | 'header' | 'responseTime';
+export type AssertionOperator = 'eq' | 'neq' | 'lt' | 'gt' | 'contains' | 'exists';
+
+export interface AssertionSpec {
+  id?: string;
+  type: AssertionType;
+  /** dot path for jsonPath (e.g. "data.items[0].id"), header name for header */
+  pathExpr?: string;
+  operator: AssertionOperator;
+  expected?: string;
+}
+
+export interface AssertionResult extends AssertionSpec {
+  actual: string | null;
+  passed: boolean;
+}
+
+export interface SavedRequestSummary {
+  id: string;
+  collectionId: string;
+  name: string;
+  endpointId?: string;
+  method: HttpMethod;
+  url: string;
+  headers: Record<string, string>;
+  body: string | null;
+  assertions: AssertionSpec[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CollectionSummary {
+  id: string;
+  projectId: string;
+  parentId: string | null;
+  name: string;
+  createdAt: string;
+}
+
+export interface CollectionsPayload {
+  collections: CollectionSummary[];
+  requests: SavedRequestSummary[];
+}
+
+export interface UpsertSavedRequest {
+  name: string;
+  endpointId?: string;
+  method: HttpMethod;
+  url: string;
+  headers?: Record<string, string>;
+  body?: string | null;
+  assertions?: AssertionSpec[];
+}
+
+export interface RunSavedRequestResult {
+  result: RunResult;
+  assertions: AssertionResult[];
+}
+
+export interface VariableExtraction {
+  /** runtime variable name, referenced later as {{name}} */
+  name: string;
+  /** dot path into the JSON response body */
+  pathExpr: string;
+}
+
+export interface ScenarioStepSummary {
+  id: string;
+  scenarioId: string;
+  savedRequestId: string;
+  order: number;
+  extractions: VariableExtraction[];
+}
+
+export interface ScenarioSummary {
+  id: string;
+  projectId: string;
+  name: string;
+  createdAt: string;
+  steps: ScenarioStepSummary[];
+}
+
+export interface StepRunResult {
+  stepId: string;
+  requestId: string;
+  requestName: string;
+  result: RunResult;
+  assertions: AssertionResult[];
+  extracted: Record<string, string>;
+  /** true when the step was not run because a previous step failed */
+  skipped: boolean;
+}
+
+export interface ScenarioRunResult {
+  scenarioId: string;
+  passed: boolean;
+  steps: StepRunResult[];
+}
+
 // ── Engine API DTOs ─────────────────────────────────────────────────────────
 
 export interface OpenProjectRequest {

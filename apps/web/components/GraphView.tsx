@@ -12,11 +12,13 @@ import {
   type NodeMouseHandler,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import type { GraphPayload, ScanStatus } from '@vision/shared';
+import type { EnvironmentSummary, GraphPayload, ScanStatus } from '@vision/shared';
 import { api } from '@/lib/api';
 import { layoutGraph } from '@/lib/layout';
 import { nodeTypes } from '@/components/graph-nodes';
 import { EndpointPanel } from '@/components/EndpointPanel';
+import { EnvPicker } from '@/components/EnvPicker';
+import { Sidebar } from '@/components/Sidebar';
 
 export function GraphView({ snapshotId }: { snapshotId: string }) {
   const [status, setStatus] = useState<ScanStatus>('pending');
@@ -25,6 +27,22 @@ export function GraphView({ snapshotId }: { snapshotId: string }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
+  const [envs, setEnvs] = useState<EnvironmentSummary[]>([]);
+  const [envId, setEnvId] = useState('');
+  const [showSidebar, setShowSidebar] = useState(false);
+
+  const projectId = graph?.snapshot.projectId;
+
+  const loadEnvs = useCallback(async () => {
+    if (!projectId) return;
+    const list = await api.listEnvironments(projectId).catch(() => []);
+    setEnvs(list);
+    setEnvId((prev) => prev || (list[0]?.id ?? ''));
+  }, [projectId]);
+
+  useEffect(() => {
+    loadEnvs();
+  }, [loadEnvs]);
 
   // Poll until the scan completes, then fetch the graph once.
   useEffect(() => {
@@ -154,12 +172,22 @@ export function GraphView({ snapshotId }: { snapshotId: string }) {
     <Shell
       toolbar={
         <>
+          <button
+            onClick={() => setShowSidebar((s) => !s)}
+            className={`rounded-lg border px-3 py-1.5 text-xs transition ${
+              showSidebar
+                ? 'border-sky-500/50 bg-sky-950/50 text-sky-300'
+                : 'border-zinc-800 text-zinc-300 hover:border-zinc-600'
+            }`}
+          >
+            Collections
+          </button>
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Filter modules & endpoints…"
             spellCheck={false}
-            className="w-72 rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-sm outline-none placeholder:text-zinc-600 focus:border-zinc-600"
+            className="w-64 rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-sm outline-none placeholder:text-zinc-600 focus:border-zinc-600"
           />
           <span className="text-xs text-zinc-500">
             {graph.snapshot.stats?.modules} modules · {graph.snapshot.stats?.endpoints} endpoints
@@ -176,32 +204,48 @@ export function GraphView({ snapshotId }: { snapshotId: string }) {
           >
             {expanded.size === graph.modules.length ? 'Collapse all' : 'Expand all'}
           </button>
+          <div className="ml-auto">
+            {projectId && (
+              <EnvPicker
+                envs={envs}
+                envId={envId}
+                onSelect={setEnvId}
+                projectId={projectId}
+                onCreated={loadEnvs}
+              />
+            )}
+          </div>
         </>
       }
     >
-      <ReactFlow
-        nodes={nodes}
-        edges={edges}
-        nodeTypes={nodeTypes}
-        onNodeClick={onNodeClick}
-        fitView
-        minZoom={0.05}
-        proOptions={{ hideAttribution: true }}
-        className="!bg-zinc-950"
-      >
-        <Background color="#27272a" gap={24} />
-        <Controls className="!border-zinc-800 !bg-zinc-900 [&_button]:!border-zinc-800 [&_button]:!bg-zinc-900 [&_button]:!text-zinc-300" />
-        <MiniMap
-          className="!border !border-zinc-800 !bg-zinc-900"
-          nodeColor={(n) => (n.type === 'module' ? '#0ea5e9' : '#3f3f46')}
-          maskColor="rgba(9,9,11,0.7)"
-        />
-      </ReactFlow>
+      {showSidebar && projectId && <Sidebar projectId={projectId} envId={envId} />}
+      <div className="relative min-h-0 min-w-0 flex-1">
+        <ReactFlow
+          nodes={nodes}
+          edges={edges}
+          nodeTypes={nodeTypes}
+          onNodeClick={onNodeClick}
+          fitView
+          minZoom={0.05}
+          proOptions={{ hideAttribution: true }}
+          className="!bg-zinc-950"
+        >
+          <Background color="#27272a" gap={24} />
+          <Controls className="!border-zinc-800 !bg-zinc-900 [&_button]:!border-zinc-800 [&_button]:!bg-zinc-900 [&_button]:!text-zinc-300" />
+          <MiniMap
+            className="!border !border-zinc-800 !bg-zinc-900"
+            nodeColor={(n) => (n.type === 'module' ? '#0ea5e9' : '#3f3f46')}
+            maskColor="rgba(9,9,11,0.7)"
+          />
+        </ReactFlow>
+      </div>
       {selectedEndpoint && (
         <EndpointPanel
           endpoint={selectedEndpoint}
           module={moduleById.get(selectedEndpoint.moduleId)}
           projectId={graph.snapshot.projectId}
+          envs={envs}
+          envId={envId}
           onClose={() => setSelectedId(null)}
         />
       )}
@@ -224,7 +268,7 @@ function Shell({
         </Link>
         {toolbar}
       </header>
-      <div className="relative min-h-0 flex-1">{children}</div>
+      <div className="relative flex min-h-0 flex-1">{children}</div>
     </div>
   );
 }

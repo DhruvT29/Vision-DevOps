@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import type { Endpoint, ModuleNode } from '@vision/shared';
+import type { Endpoint, EnvironmentSummary, ModuleNode } from '@vision/shared';
 import { methodBadge } from '@/lib/method-colors';
 import { TestPane } from '@/components/TestPane';
 
@@ -9,11 +9,15 @@ export function EndpointPanel({
   endpoint,
   module: mod,
   projectId,
+  envs,
+  envId,
   onClose,
 }: {
   endpoint: Endpoint;
   module: ModuleNode | undefined;
   projectId: string;
+  envs: EnvironmentSummary[];
+  envId: string;
   onClose: () => void;
 }) {
   const [tab, setTab] = useState<'overview' | 'test'>('overview');
@@ -57,7 +61,9 @@ export function EndpointPanel({
         ))}
       </div>
 
-      {tab === 'test' && <TestPane endpoint={endpoint} projectId={projectId} />}
+      {tab === 'test' && (
+        <TestPane endpoint={endpoint} projectId={projectId} envs={envs} envId={envId} />
+      )}
 
       {tab === 'overview' && (
       <>
