@@ -1,0 +1,15 @@
+{
+  "name": "vision",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Vision — project knowledge graph & API testing workbench",
+  "scripts": {
+    "dev": "pnpm --parallel -r run dev",
+    "build": "pnpm -r run build",
+    "dev:web": "pnpm --filter @vision/web dev",
+    "dev:engine": "pnpm --filter @vision/engine dev"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,17 @@
+# deps
+node_modules/
+
+# builds
+dist/
+.next/
+out/
+
+# env & local db
+.env
+*.db
+*.db-journal
+
+# misc
+.DS_Store
+*.log
+.turbo/

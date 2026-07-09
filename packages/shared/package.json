@@ -1,0 +1,7 @@
+{
+  "name": "@vision/shared",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Shared contract types between the Vision web UI and engine. TYPES ONLY — shipped as a .d.ts so neither consumer needs a build step.",
+  "types": "./src/index.d.ts"
+}

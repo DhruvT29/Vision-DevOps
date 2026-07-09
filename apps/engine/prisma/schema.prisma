@@ -1,0 +1,136 @@
+// Vision engine database — local SQLite.
+// JSON-shaped data is stored as stringified JSON in *Json columns
+// (SQLite provider has no native Json type).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ── Analysis side (rebuilt per scan) ────────────────────────────────────────
+
+model Project {
+  id                 String        @id @default(cuid())
+  name               String
+  rootPath           String        @unique
+  detectedStacksJson String        @default("[]")
+  createdAt          DateTime      @default(now())
+  lastOpenedAt       DateTime      @default(now())
+  snapshots          Snapshot[]
+  environments       Environment[]
+  executions         Execution[]
+}
+
+model Snapshot {
+  id            String         @id @default(cuid())
+  projectId     String
+  project       Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  status        String         @default("pending") // pending | running | completed | failed
+  error         String?
+  statsJson     String?
+  createdAt     DateTime       @default(now())
+  modules       ModuleNode[]
+  frontendCalls FrontendCall[]
+  edges         GraphEdge[]
+
+  @@index([projectId])
+}
+
+model ModuleNode {
+  id         String     @id @default(cuid())
+  snapshotId String
+  snapshot   Snapshot   @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+  name       String
+  kind       String // nest-module | next-api-group | react-feature
+  filePath   String
+  endpoints  Endpoint[]
+
+  @@index([snapshotId])
+}
+
+model Endpoint {
+  id             String     @id @default(cuid())
+  moduleId       String
+  module         ModuleNode @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  layer          String // nest | next-api
+  method         String
+  fullPath       String
+  handlerName    String
+  paramsJson     String     @default("[]")
+  bodyFieldsJson String?
+  bodyTypeName   String?
+  authJson       String     @default("{\"required\":false,\"guards\":[],\"roles\":[]}")
+  filePath       String
+  line           Int
+
+  @@index([moduleId])
+}
+
+model FrontendCall {
+  id           String   @id @default(cuid())
+  snapshotId   String
+  snapshot     Snapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+  client       String // axios | fetch | react-query | rtk-query | other
+  method       String
+  rawUrl       String
+  resolvedPath String?
+  callerSymbol String
+  filePath     String
+  line         Int
+
+  @@index([snapshotId])
+}
+
+// ── Testing side (persistent, user-owned) ───────────────────────────────────
+
+model Environment {
+  id            String   @id @default(cuid())
+  projectId     String
+  project       Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name          String
+  baseUrl       String
+  variablesJson String   @default("{}")
+  authJson      String   @default("{\"type\":\"none\"}")
+  createdAt     DateTime @default(now())
+
+  @@index([projectId])
+}
+
+model Execution {
+  id                  String   @id @default(cuid())
+  projectId           String
+  project             Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  endpointId          String? // loose ref — endpoints are per-snapshot rows
+  environmentId       String?
+  method              String
+  url                 String
+  requestHeadersJson  String   @default("{}")
+  requestBody         String?
+  status              Int?
+  durationMs          Int
+  responseHeadersJson String   @default("{}")
+  responseBody        String?
+  truncated           Boolean  @default(false)
+  error               String?
+  createdAt           DateTime @default(now())
+
+  @@index([projectId, createdAt])
+  @@index([endpointId])
+}
+
+model GraphEdge {
+  id         String   @id @default(cuid())
+  snapshotId String
+  snapshot   Snapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+  sourceId   String
+  targetId   String
+  type       String // contains | calls | imports
+  confidence Float    @default(1)
+  manual     Boolean  @default(false)
+
+  @@index([snapshotId])
+}
