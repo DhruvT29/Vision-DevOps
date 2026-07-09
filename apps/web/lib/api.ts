@@ -3,7 +3,10 @@ import type {
   CollectionSummary,
   EnvironmentSummary,
   ExecutionSummary,
+  GithubPreflightRequest,
+  GithubPreflightResult,
   GraphPayload,
+  OpenGithubRequest,
   OpenProjectResponse,
   ProjectSummary,
   RunRequest,
@@ -38,6 +41,16 @@ export const api = {
     req<OpenProjectResponse>('/projects/open', {
       method: 'POST',
       body: JSON.stringify({ rootPath }),
+    }),
+  openGithub: (body: OpenGithubRequest) =>
+    req<OpenProjectResponse>('/projects/open-github', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  githubPreflight: (body: GithubPreflightRequest) =>
+    req<GithubPreflightResult>('/projects/github-preflight', {
+      method: 'POST',
+      body: JSON.stringify(body),
     }),
   listProjects: () => req<ProjectSummary[]>('/projects'),
   latestSnapshot: (projectId: string) =>

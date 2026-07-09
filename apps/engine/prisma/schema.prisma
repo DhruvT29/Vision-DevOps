@@ -18,6 +18,10 @@ model Project {
   name               String
   rootPath           String        @unique
   detectedStacksJson String        @default("[]")
+  source             String        @default("local") // local | github
+  repoUrl            String? // canonical https URL — display + blob links
+  repoCloneUrl       String? // transport URL git used (ssh or https)
+  repoBranch         String?
   createdAt          DateTime      @default(now())
   lastOpenedAt       DateTime      @default(now())
   snapshots          Snapshot[]

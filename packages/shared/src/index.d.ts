@@ -7,12 +7,22 @@
 
 // ── Projects & scanning ─────────────────────────────────────────────────────
 
+export type ProjectSource = 'local' | 'github';
+
 export interface ProjectSummary {
   id: string;
   name: string;
   rootPath: string;
   /** Stacks detected inside the root, e.g. ["nest", "next", "react"] */
   detectedStacks: DetectedStack[];
+  /** Where the code came from — a local directory or a cloned GitHub repo */
+  source: ProjectSource;
+  /** Canonical https URL (github projects) — used for display + blob links */
+  repoUrl?: string;
+  /** Transport URL git actually cloned from (ssh or https form) */
+  repoCloneUrl?: string;
+  /** Branch that was cloned/analyzed */
+  repoBranch?: string;
   lastOpenedAt: string; // ISO
   createdAt: string; // ISO
 }
@@ -109,6 +119,8 @@ export interface Endpoint {
   auth: EndpointAuth;
   filePath: string;
   line: number;
+  /** github projects only — link to the defining line on github.com */
+  sourceUrl?: string;
 }
 
 export type FrontendHttpClient = 'axios' | 'fetch' | 'react-query' | 'rtk-query' | 'other';
@@ -125,6 +137,8 @@ export interface FrontendCall {
   callerSymbol: string;
   filePath: string;
   line: number;
+  /** github projects only — link to the call site on github.com */
+  sourceUrl?: string;
 }
 
 export type EdgeType = 'contains' | 'calls' | 'imports';
@@ -327,6 +341,48 @@ export interface OpenProjectRequest {
 export interface OpenProjectResponse {
   project: ProjectSummary;
   snapshot: SnapshotSummary;
+}
+
+// ── GitHub source ───────────────────────────────────────────────────────────
+
+export interface OpenGithubRequest {
+  /** https or ssh github URL */
+  repoUrl: string;
+  /** branch to clone; defaults to the repo's default branch */
+  branch?: string;
+  /** optional PAT override; system credentials are tried first when omitted */
+  token?: string;
+}
+
+export interface GithubPreflightRequest {
+  repoUrl: string;
+  token?: string;
+}
+
+/**
+ * Result of the pre-open check: credential discovery + access probe + branch
+ * list. Discriminated on `access`.
+ */
+export type GithubPreflightResult =
+  | {
+      access: true;
+      /** github login of the account that had access, e.g. "octocat" */
+      account?: string;
+      /** true when access came from a discovered system credential (not public, not a pasted token) */
+      usedSystemCredential: boolean;
+      defaultBranch: string;
+      branches: string[];
+    }
+  | {
+      access: false;
+      /** github logins whose credentials were tried, for the "ask owner" message */
+      triedAccounts: string[];
+    };
+
+/** Body of the 403 the engine returns when a direct Open finds no access. */
+export interface GithubNoAccessError {
+  message: string;
+  triedAccounts: string[];
 }
 
 export interface HealthResponse {

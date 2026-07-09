@@ -1,6 +1,19 @@
 import { Controller, Get, NotFoundException, Param } from '@nestjs/common';
+import * as path from 'path';
 import type { GraphPayload, SnapshotSummary } from '@vision/shared';
 import { PrismaService } from '../prisma/prisma.service';
+
+/** Builds a github.com blob link from an absolute clone-dir path, if possible. */
+function blobUrl(
+  project: { source: string; repoUrl: string | null; repoBranch: string | null; rootPath: string },
+  filePath: string,
+  line: number,
+): string | undefined {
+  if (project.source !== 'github' || !project.repoUrl || !project.repoBranch) return undefined;
+  const rel = path.relative(project.rootPath, filePath).replace(/\\/g, '/');
+  if (!rel || rel.startsWith('..')) return undefined;
+  return `${project.repoUrl}/blob/${project.repoBranch}/${rel}#L${line}`;
+}
 
 @Controller('snapshots')
 export class AnalysisController {
@@ -24,6 +37,9 @@ export class AnalysisController {
       },
     });
     if (!snap) throw new NotFoundException(`Snapshot ${id} not found`);
+
+    // github projects link source lines back to github.com
+    const project = await this.prisma.project.findUnique({ where: { id: snap.projectId } });
 
     return {
       snapshot: this.toSummary(snap),
@@ -49,6 +65,7 @@ export class AnalysisController {
           auth: JSON.parse(e.authJson),
           filePath: e.filePath,
           line: e.line,
+          sourceUrl: project ? blobUrl(project, e.filePath, e.line) : undefined,
         })),
       ),
       frontendCalls: snap.frontendCalls.map((c) => ({
@@ -61,6 +78,7 @@ export class AnalysisController {
         callerSymbol: c.callerSymbol,
         filePath: c.filePath,
         line: c.line,
+        sourceUrl: project ? blobUrl(project, c.filePath, c.line) : undefined,
       })),
       edges: snap.edges.map((e) => ({
         id: e.id,

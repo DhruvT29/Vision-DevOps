@@ -1,10 +1,19 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/common';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { OpenProjectResponse, ProjectSummary } from '@vision/shared';
 import { PrismaService } from '../prisma/prisma.service';
 import { ScannerService } from '../analysis/scanner.service';
 import { StackDetectorService } from '../analysis/stack-detector.service';
+import { GithubSourceService, NoRepoAccessError } from './github-source.service';
+import { OpenGithubDto } from './open-github.dto';
+
+interface GithubMeta {
+  source: 'github';
+  repoUrl: string;
+  repoCloneUrl: string;
+  repoBranch: string;
+}
 
 @Injectable()
 export class ProjectsService {
@@ -12,9 +21,32 @@ export class ProjectsService {
     private readonly prisma: PrismaService,
     private readonly detector: StackDetectorService,
     private readonly scanner: ScannerService,
+    private readonly github: GithubSourceService,
   ) {}
 
-  async open(rootPath: string): Promise<OpenProjectResponse> {
+  /** Clone a GitHub repo (reusing system credentials) then analyze it like a local dir. */
+  async openGithub(dto: OpenGithubDto): Promise<OpenProjectResponse> {
+    let resolved: Awaited<ReturnType<GithubSourceService['resolve']>>;
+    try {
+      resolved = await this.github.resolve(dto);
+    } catch (e) {
+      if (e instanceof NoRepoAccessError) {
+        throw new ForbiddenException({
+          message: 'Ask owner to grant access to you',
+          triedAccounts: e.triedAccounts,
+        });
+      }
+      throw e;
+    }
+    return this.open(resolved.rootPath, {
+      source: 'github',
+      repoUrl: resolved.repoUrl,
+      repoCloneUrl: resolved.cloneUrl,
+      repoBranch: resolved.branch,
+    });
+  }
+
+  async open(rootPath: string, meta?: GithubMeta): Promise<OpenProjectResponse> {
     const normalized = path.resolve(rootPath);
     if (!fs.existsSync(normalized) || !fs.statSync(normalized).isDirectory()) {
       throw new BadRequestException(`Not a directory: ${normalized}`);
@@ -27,16 +59,27 @@ export class ProjectsService {
       );
     }
 
+    const githubFields = meta
+      ? {
+          source: meta.source,
+          repoUrl: meta.repoUrl,
+          repoCloneUrl: meta.repoCloneUrl,
+          repoBranch: meta.repoBranch,
+        }
+      : {};
+
     const project = await this.prisma.project.upsert({
       where: { rootPath: normalized },
       create: {
-        name: path.basename(normalized),
+        name: meta ? this.repoName(meta.repoUrl) : path.basename(normalized),
         rootPath: normalized,
         detectedStacksJson: JSON.stringify(stacks),
+        ...githubFields,
       },
       update: {
         lastOpenedAt: new Date(),
         detectedStacksJson: JSON.stringify(stacks),
+        ...githubFields,
       },
     });
 
@@ -78,11 +121,20 @@ export class ProjectsService {
     );
   }
 
+  /** "owner/repo" from a canonical https github url, for the project name. */
+  private repoName(repoUrl: string): string {
+    return repoUrl.replace(/^https?:\/\/github\.com\//i, '').replace(/\.git$/i, '');
+  }
+
   private toSummary(p: {
     id: string;
     name: string;
     rootPath: string;
     detectedStacksJson: string;
+    source: string;
+    repoUrl: string | null;
+    repoCloneUrl: string | null;
+    repoBranch: string | null;
     lastOpenedAt: Date;
     createdAt: Date;
   }): ProjectSummary {
@@ -91,6 +143,10 @@ export class ProjectsService {
       name: p.name,
       rootPath: p.rootPath,
       detectedStacks: JSON.parse(p.detectedStacksJson),
+      source: p.source === 'github' ? 'github' : 'local',
+      repoUrl: p.repoUrl ?? undefined,
+      repoCloneUrl: p.repoCloneUrl ?? undefined,
+      repoBranch: p.repoBranch ?? undefined,
       lastOpenedAt: p.lastOpenedAt.toISOString(),
       createdAt: p.createdAt.toISOString(),
     };
