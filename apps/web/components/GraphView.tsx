@@ -19,6 +19,7 @@ import { nodeTypes } from '@/components/graph-nodes';
 import { EndpointPanel } from '@/components/EndpointPanel';
 import { EnvPicker } from '@/components/EnvPicker';
 import { Sidebar } from '@/components/Sidebar';
+import { AppShell } from '@/components/AppShell';
 
 export function GraphView({ snapshotId }: { snapshotId: string }) {
   const [status, setStatus] = useState<ScanStatus>('pending');
@@ -77,6 +78,11 @@ export function GraphView({ snapshotId }: { snapshotId: string }) {
     () => new Map(graph?.modules.map((m) => [m.id, m]) ?? []),
     [graph],
   );
+  // modules rendered on this graph — provider-only modules are dependency-graph-only
+  const expandableModules = useMemo(
+    () => graph?.modules.filter((m) => m.endpointCount > 0) ?? [],
+    [graph],
+  );
   const endpointById = useMemo(
     () => new Map(graph?.endpoints.map((e) => [e.id, e]) ?? []),
     [graph],
@@ -100,6 +106,8 @@ export function GraphView({ snapshotId }: { snapshotId: string }) {
 
     for (const mod of graph.modules) {
       const modEndpoints = graph.endpoints.filter((e) => e.moduleId === mod.id);
+      // provider-only modules (no endpoints) belong to the dependency graph
+      if (modEndpoints.length === 0) continue;
       const modVisible =
         matchesSearch(mod.name) || modEndpoints.some((e) => matchesSearch(e.fullPath));
       if (!modVisible) continue;
@@ -234,33 +242,33 @@ export function GraphView({ snapshotId }: { snapshotId: string }) {
 
   if (scanError) {
     return (
-      <Shell>
-        <div className="flex h-full flex-col items-center justify-center gap-3">
+      <AppShell snapshotId={snapshotId}>
+        <div className="flex flex-1 flex-col items-center justify-center gap-3">
           <p className="text-red-400">Scan failed</p>
           <p className="max-w-lg text-center font-mono text-xs text-zinc-500">{scanError}</p>
           <Link href="/" className="text-sm text-sky-400 hover:underline">← back</Link>
         </div>
-      </Shell>
+      </AppShell>
     );
   }
 
   if (!graph) {
     return (
-      <Shell>
-        <div className="flex h-full flex-col items-center justify-center gap-3">
+      <AppShell snapshotId={snapshotId}>
+        <div className="flex flex-1 flex-col items-center justify-center gap-3">
           <div className="h-8 w-8 animate-spin rounded-full border-2 border-zinc-700 border-t-zinc-200" />
           <p className="text-sm text-zinc-400">
             {status === 'running' ? 'Analyzing project…' : 'Starting scan…'}
           </p>
         </div>
-      </Shell>
+      </AppShell>
     );
   }
 
   return (
-    <Shell
-      toolbar={
-        <>
+    <AppShell snapshotId={snapshotId} stats={graph.snapshot.stats}>
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <div className="flex items-center gap-4 border-b border-zinc-800 px-4 py-2.5">
           <button
             onClick={() => setShowSidebar((s) => !s)}
             className={`rounded-lg border px-3 py-1.5 text-xs transition ${
@@ -278,11 +286,6 @@ export function GraphView({ snapshotId }: { snapshotId: string }) {
             spellCheck={false}
             className="w-64 rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-sm outline-none placeholder:text-zinc-600 focus:border-zinc-600"
           />
-          <span className="text-xs text-zinc-500">
-            {graph.snapshot.stats?.modules} modules · {graph.snapshot.stats?.endpoints} endpoints
-            {(graph.snapshot.stats?.frontendCalls ?? 0) > 0 &&
-              ` · ${graph.snapshot.stats?.frontendCalls} calls`}
-          </span>
           {(graph.snapshot.stats?.frontendCalls ?? 0) > 0 && (
             <button
               onClick={() => setShowFrontend((s) => !s)}
@@ -298,14 +301,14 @@ export function GraphView({ snapshotId }: { snapshotId: string }) {
           <button
             onClick={() =>
               setExpanded((prev) =>
-                prev.size === graph.modules.length
+                prev.size === expandableModules.length
                   ? new Set()
-                  : new Set(graph.modules.map((m) => m.id)),
+                  : new Set(expandableModules.map((m) => m.id)),
               )
             }
             className="rounded-lg border border-zinc-800 px-3 py-1.5 text-xs text-zinc-300 transition hover:border-zinc-600"
           >
-            {expanded.size === graph.modules.length ? 'Collapse all' : 'Expand all'}
+            {expanded.size === expandableModules.length ? 'Collapse all' : 'Expand all'}
           </button>
           <div className="ml-auto">
             {projectId && (
@@ -318,60 +321,41 @@ export function GraphView({ snapshotId }: { snapshotId: string }) {
               />
             )}
           </div>
-        </>
-      }
-    >
-      {showSidebar && projectId && <Sidebar projectId={projectId} envId={envId} />}
-      <div className="relative min-h-0 min-w-0 flex-1">
-        <ReactFlow
-          nodes={nodes}
-          edges={edges}
-          nodeTypes={nodeTypes}
-          onNodeClick={onNodeClick}
-          fitView
-          minZoom={0.05}
-          proOptions={{ hideAttribution: true }}
-          className="!bg-zinc-950"
-        >
-          <Background color="#27272a" gap={24} />
-          <Controls className="!border-zinc-800 !bg-zinc-900 [&_button]:!border-zinc-800 [&_button]:!bg-zinc-900 [&_button]:!text-zinc-300" />
-          <MiniMap
-            className="!border !border-zinc-800 !bg-zinc-900"
-            nodeColor={(n) => (n.type === 'module' ? '#0ea5e9' : '#3f3f46')}
-            maskColor="rgba(9,9,11,0.7)"
-          />
-        </ReactFlow>
+        </div>
+        <div className="relative flex min-h-0 flex-1">
+          {showSidebar && projectId && <Sidebar projectId={projectId} envId={envId} />}
+          <div className="relative min-h-0 min-w-0 flex-1">
+            <ReactFlow
+              nodes={nodes}
+              edges={edges}
+              nodeTypes={nodeTypes}
+              onNodeClick={onNodeClick}
+              fitView
+              minZoom={0.05}
+              proOptions={{ hideAttribution: true }}
+              className="!bg-zinc-950"
+            >
+              <Background color="#27272a" gap={24} />
+              <Controls className="!border-zinc-800 !bg-zinc-900 [&_button]:!border-zinc-800 [&_button]:!bg-zinc-900 [&_button]:!text-zinc-300" />
+              <MiniMap
+                className="!border !border-zinc-800 !bg-zinc-900"
+                nodeColor={(n) => (n.type === 'module' ? '#0ea5e9' : '#3f3f46')}
+                maskColor="rgba(9,9,11,0.7)"
+              />
+            </ReactFlow>
+          </div>
+          {selectedEndpoint && (
+            <EndpointPanel
+              endpoint={selectedEndpoint}
+              module={moduleById.get(selectedEndpoint.moduleId)}
+              projectId={graph.snapshot.projectId}
+              envs={envs}
+              envId={envId}
+              onClose={() => setSelectedId(null)}
+            />
+          )}
+        </div>
       </div>
-      {selectedEndpoint && (
-        <EndpointPanel
-          endpoint={selectedEndpoint}
-          module={moduleById.get(selectedEndpoint.moduleId)}
-          projectId={graph.snapshot.projectId}
-          envs={envs}
-          envId={envId}
-          onClose={() => setSelectedId(null)}
-        />
-      )}
-    </Shell>
-  );
-}
-
-function Shell({
-  children,
-  toolbar,
-}: {
-  children: React.ReactNode;
-  toolbar?: React.ReactNode;
-}) {
-  return (
-    <div className="flex h-screen flex-col">
-      <header className="flex items-center gap-4 border-b border-zinc-800 px-4 py-2.5">
-        <Link href="/" className="text-sm font-bold tracking-tight text-zinc-100 hover:text-white">
-          Vision
-        </Link>
-        {toolbar}
-      </header>
-      <div className="relative flex min-h-0 flex-1">{children}</div>
-    </div>
+    </AppShell>
   );
 }

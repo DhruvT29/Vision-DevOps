@@ -1,11 +1,13 @@
 import type {
   CollectionsPayload,
   CollectionSummary,
+  DiffImpactResult,
   EnvironmentSummary,
   ExecutionSummary,
   GithubPreflightRequest,
   GithubPreflightResult,
   GraphPayload,
+  InsightsPayload,
   OpenGithubRequest,
   OpenProjectResponse,
   ProjectSummary,
@@ -53,10 +55,18 @@ export const api = {
       body: JSON.stringify(body),
     }),
   listProjects: () => req<ProjectSummary[]>('/projects'),
+  deleteProject: (id: string) =>
+    req<{ ok: true }>(`/projects/${id}`, { method: 'DELETE' }),
   latestSnapshot: (projectId: string) =>
     req<SnapshotSummary>(`/projects/${projectId}/latest-snapshot`),
   snapshot: (id: string) => req<SnapshotSummary>(`/snapshots/${id}`),
   graph: (id: string) => req<GraphPayload>(`/snapshots/${id}/graph`),
+  insights: (id: string) => req<InsightsPayload>(`/snapshots/${id}/insights`),
+  diffImpact: (id: string, base?: string) =>
+    req<DiffImpactResult>(`/snapshots/${id}/diff-impact`, {
+      method: 'POST',
+      body: JSON.stringify({ base: base || undefined }),
+    }),
 
   listEnvironments: (projectId: string) =>
     req<EnvironmentSummary[]>(`/projects/${projectId}/environments`),

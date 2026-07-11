@@ -33,6 +33,9 @@ type ProbeResult =
       defaultBranch?: string;
       /** set when access/branches came from `git ls-remote` (SSH / helper) */
       branches?: string[];
+      /** transport URL that actually authenticated — may swap the host for an
+       *  ssh-config alias (e.g. github.com → github.com-work) */
+      cloneUrl?: string;
       triedAccounts: string[];
     }
   | { access: false; triedAccounts: string[] };
@@ -131,9 +134,12 @@ export class GithubSourceService {
     if (!probe.access) throw new NoRepoAccessError(probe.triedAccounts);
 
     const branch = dto.branch?.trim() || probe.defaultBranch || 'main';
+    // Clone over the transport that actually authenticated (probeAccess may
+    // have swapped the ssh host for the alias whose key has access).
+    const effectiveCloneUrl = probe.cloneUrl ?? cloneUrl;
     const dir = this.cacheDirFor(owner, repo, branch);
-    await this.withLock(dir, () => this.cloneOrUpdate(dir, cloneUrl, branch, probe.token));
-    return { rootPath: dir, repoUrl: webUrl, cloneUrl, branch, account: probe.account };
+    await this.withLock(dir, () => this.cloneOrUpdate(dir, effectiveCloneUrl, branch, probe.token));
+    return { rootPath: dir, repoUrl: webUrl, cloneUrl: effectiveCloneUrl, branch, account: probe.account };
   }
 
   // ── URL parsing ───────────────────────────────────────────────────────────
@@ -221,20 +227,97 @@ export class GithubSourceService {
       tried.push(login ? `@${login}` : cred.source);
     }
 
-    // Ambient git — SSH keys (incl. ssh-config host aliases) or a credential
-    // helper the REST probe couldn't enumerate as a token. `git ls-remote`
-    // does exactly what a clone will do, and hands back the branch list.
-    const ls = await this.gitLsRemote(cloneUrl);
-    if (ls.ok) {
-      return {
-        access: true,
-        usedSystemCredential: true,
-        defaultBranch: ls.defaultBranch,
-        branches: ls.branches,
-        triedAccounts: tried,
-      };
+    // Ambient git — a credential helper the REST probe couldn't enumerate as a
+    // token, and every github.com SSH identity in ~/.ssh/config (multi-account
+    // setups map extra aliases like github.com-work to different keys, so the
+    // pasted host may not be the one that has access). `git ls-remote` does
+    // exactly what a clone will do, and hands back the branch list.
+    const isSshUrl = cloneUrl.startsWith('git@') || cloneUrl.startsWith('ssh://');
+    const ambient: Array<{ url: string; host?: string }> = [];
+    if (!isSshUrl) ambient.push({ url: cloneUrl });
+    ambient.push(...this.sshCandidates(cloneUrl, owner, repo));
+
+    for (const cand of ambient) {
+      const ls = await this.gitLsRemote(cand.url);
+      const login = cand.host ? await this.sshWhoami(cand.host) : undefined;
+      if (ls.ok) {
+        return {
+          access: true,
+          usedSystemCredential: true,
+          account: login,
+          defaultBranch: ls.defaultBranch,
+          branches: ls.branches,
+          cloneUrl: cand.url,
+          triedAccounts: tried,
+        };
+      }
+      if (login && !tried.includes(`@${login}`)) tried.push(`@${login}`);
     }
     return { access: false, triedAccounts: tried };
+  }
+
+  /**
+   * SSH clone-URL variants to probe: the URL as pasted first, then the repo
+   * rewritten onto every ~/.ssh/config alias that points at github.com.
+   */
+  private sshCandidates(
+    cloneUrl: string,
+    owner: string,
+    repo: string,
+  ): Array<{ url: string; host: string }> {
+    const originalHost = (cloneUrl.match(/^git@([^:]+):/i) ??
+      cloneUrl.match(/^ssh:\/\/git@([^/]+)\//i))?.[1];
+
+    const out: Array<{ url: string; host: string }> = [];
+    const seen = new Set<string>();
+    const push = (url: string, host: string) => {
+      if (seen.has(host.toLowerCase())) return;
+      seen.add(host.toLowerCase());
+      out.push({ url, host });
+    };
+    if (originalHost) push(cloneUrl, originalHost);
+    for (const host of this.sshGithubHosts()) push(`git@${host}:${owner}/${repo}.git`, host);
+    return out;
+  }
+
+  /** All ssh-config Host aliases whose HostName is github.com, plus github.com itself. */
+  private sshGithubHosts(): string[] {
+    const hosts: string[] = [];
+    try {
+      const cfg = path.join(os.homedir(), '.ssh', 'config');
+      if (fs.existsSync(cfg)) {
+        let aliases: string[] = [];
+        for (const raw of fs.readFileSync(cfg, 'utf-8').split(/\r?\n/)) {
+          const line = raw.trim();
+          if (/^host\s+/i.test(line)) {
+            aliases = line
+              .replace(/^host\s+/i, '')
+              .split(/\s+/)
+              .filter((h) => !/[*?]/.test(h)); // skip wildcard patterns
+          } else if (/^hostname\s+github\.com\s*$/i.test(line)) {
+            for (const a of aliases) if (!hosts.includes(a)) hosts.push(a);
+          }
+        }
+      }
+    } catch {
+      /* unreadable config — fall through to the bare host */
+    }
+    if (!hosts.some((h) => h.toLowerCase() === 'github.com')) hosts.unshift('github.com');
+    return hosts;
+  }
+
+  /** GitHub reports the authenticated login on `ssh -T` ("Hi <login>! ..."). */
+  private async sshWhoami(host: string): Promise<string | undefined> {
+    try {
+      const { stdout, stderr } = await runCmd(
+        'ssh',
+        ['-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=accept-new', '-T', `git@${host}`],
+        { timeoutMs: 15_000 },
+      );
+      return `${stdout}\n${stderr}`.match(/\bHi ([^\s!]+)!/)?.[1];
+    } catch {
+      return undefined;
+    }
   }
 
   /** Tests repo access over whatever transport the URL implies, returning branches. */
@@ -419,6 +502,9 @@ export class GithubSourceService {
 
     try {
       if (fs.existsSync(gitDir)) {
+        // re-point origin at the transport that authenticated this time (the
+        // cached clone may have been created via a different host alias)
+        await this.git(['-C', dir, 'remote', 'set-url', 'origin', cloneUrl], secrets);
         await this.git([...authArgs, '-C', dir, 'fetch', '--depth', '1', 'origin', branch], secrets);
         await this.git(['-C', dir, 'reset', '--hard', 'FETCH_HEAD'], secrets);
       } else {

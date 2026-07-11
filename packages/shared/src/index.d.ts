@@ -66,6 +66,8 @@ export interface ModuleNode {
   /** Absolute path of the defining file (e.g. the *.module.ts) */
   filePath: string;
   endpointCount: number;
+  /** Nest @Global() module — its providers are reachable everywhere without imports */
+  isGlobal?: boolean;
 }
 
 export type HttpMethod =
@@ -141,7 +143,27 @@ export interface FrontendCall {
   sourceUrl?: string;
 }
 
-export type EdgeType = 'contains' | 'calls' | 'imports';
+/**
+ * `imports`      — declared NestJS wiring: @Module({ imports: [...] })
+ * `file-imports` — hidden coupling: raw import statements crossing module
+ *                  folders without the @Module wiring (DTOs, helpers, ...)
+ */
+export type EdgeType = 'contains' | 'calls' | 'imports' | 'file-imports';
+
+/**
+ * Coupling evidence carried by dependency edges. On `file-imports` edges it
+ * describes the hidden coupling itself; on declared `imports` edges it
+ * describes the file-level traffic underneath the wiring (when any exists).
+ * Paths are project-root relative.
+ */
+export interface CouplingMeta {
+  /** total number of cross-module import statements found */
+  count: number;
+  /** sample of importing → imported file pairs (capped) */
+  files: { from: string; to: string }[];
+  /** symbols crossing the boundary (services, DTOs, helpers) with usage counts */
+  symbols?: { name: string; count: number }[];
+}
 
 export interface GraphEdge {
   id: string;
@@ -153,6 +175,66 @@ export interface GraphEdge {
   confidence: number;
   /** true when a user manually created/confirmed the edge */
   manual: boolean;
+  /** coupling evidence (files + symbols crossing the module boundary) */
+  meta?: CouplingMeta;
+}
+
+// ── Insights (health / churn / ownership) & diff impact ─────────────────────
+
+export interface ContributorStat {
+  name: string;
+  commits: number;
+}
+
+export interface ModuleChurn {
+  moduleId: string;
+  name: string;
+  /** commits that touched at least one file owned by this module */
+  commits: number;
+  lastCommitAt?: string; // ISO
+  /** top contributors for this module's files */
+  contributors: ContributorStat[];
+}
+
+export interface InsightsPayload {
+  snapshotId: string;
+  git: {
+    available: boolean;
+    /** set when available=false, e.g. "not a git repository" */
+    reason?: string;
+    commitsAnalyzed: number;
+    /** true when a shallow GitHub clone was deepened for history */
+    deepened?: boolean;
+  };
+  /** repo-wide top contributors (within the project root) */
+  contributors: ContributorStat[];
+  modules: ModuleChurn[];
+}
+
+export interface DiffImpactRequest {
+  /**
+   * Git ref to diff the working tree against. Defaults to HEAD (uncommitted
+   * changes). For GitHub-sourced projects pass a branch/ref to compare, e.g.
+   * "main" or "main~5".
+   */
+  base?: string;
+}
+
+export interface ChangedFile {
+  /** project-root-relative path */
+  path: string;
+  /** git status letter: M, A, D, R, ... */
+  status: string;
+  moduleId: string | null;
+  moduleName: string | null;
+}
+
+export interface DiffImpactResult {
+  /** the ref actually diffed against */
+  base: string;
+  changedFiles: ChangedFile[];
+  /** distinct modules owning changed files */
+  moduleIds: string[];
 }
 
 /** Full graph payload the engine returns for a snapshot. */

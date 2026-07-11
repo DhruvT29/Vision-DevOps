@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { GithubPreflightResult, ProjectSummary } from '@vision/shared';
 import { api } from '@/lib/api';
+import { BranchSelect } from '@/components/BranchSelect';
 
 type SourceMode = 'local' | 'github';
 
@@ -15,6 +16,7 @@ export default function Home() {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
 
   useEffect(() => {
     fetch(`${process.env.NEXT_PUBLIC_ENGINE_URL ?? 'http://localhost:4000'}/health`)
@@ -28,10 +30,21 @@ export default function Home() {
     setError(null);
     try {
       const res = await api.openProject(path);
-      router.push(`/graph/${res.snapshot.id}`);
+      router.push(`/project/${res.snapshot.id}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setBusy(false);
+    }
+  }
+
+  async function removeProject(project: ProjectSummary) {
+    try {
+      await api.deleteProject(project.id);
+      setProjects((prev) => prev.filter((p) => p.id !== project.id));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setConfirmRemove(null);
     }
   }
 
@@ -41,7 +54,7 @@ export default function Home() {
     try {
       const snap = await api.latestSnapshot(project.id);
       if (snap.status === 'completed') {
-        router.push(`/graph/${snap.id}`);
+        router.push(`/project/${snap.id}`);
         return;
       }
       // stale/failed → rescan from the original source
@@ -50,7 +63,7 @@ export default function Home() {
           repoUrl: project.repoCloneUrl ?? project.repoUrl!,
           branch: project.repoBranch,
         });
-        router.push(`/graph/${res.snapshot.id}`);
+        router.push(`/project/${res.snapshot.id}`);
       } else {
         await openPath(project.rootPath);
       }
@@ -63,9 +76,8 @@ export default function Home() {
   return (
     <main className="mx-auto flex min-h-screen max-w-3xl flex-col justify-center gap-10 px-6 py-16">
       <header className="flex flex-col items-center gap-3">
-        <h1 className="text-6xl font-bold tracking-tight">Vision</h1>
-        <p className="text-zinc-400">Project knowledge graph &amp; API testing workbench</p>
-        <div className="flex items-center gap-2 rounded-full border border-zinc-800 px-3 py-1 text-xs">
+        <h1 className="pl-[1.65em] text-6xl font-bold tracking-[1.65em]">VISION</h1>
+        <div className="mt-9 flex items-center gap-2 rounded-full border border-zinc-800 px-3 py-1 text-xs">
           <span
             className={`h-2 w-2 rounded-full ${
               engineOk === null ? 'bg-zinc-600' : engineOk ? 'bg-emerald-500' : 'bg-red-500'
@@ -78,7 +90,7 @@ export default function Home() {
       </header>
 
       <section className="flex flex-col gap-3">
-        <div className="flex gap-1 self-start rounded-lg border border-zinc-800 p-0.5 text-sm">
+        <div className="flex gap-1 self-center rounded-lg border border-zinc-800 p-0.5 text-sm">
           {(['local', 'github'] as const).map((m) => (
             <button
               key={m}
@@ -120,7 +132,7 @@ export default function Home() {
           <GithubForm
             busy={busy}
             setBusy={setBusy}
-            onOpened={(snapshotId) => router.push(`/graph/${snapshotId}`)}
+            onOpened={(snapshotId) => router.push(`/project/${snapshotId}`)}
             error={error}
             setError={setError}
           />
@@ -132,11 +144,11 @@ export default function Home() {
         <section className="flex flex-col gap-2">
           <h2 className="text-sm font-medium text-zinc-500">Recent projects</h2>
           {projects.map((p) => (
-            <button
+            <div
               key={p.id}
-              onClick={() => openExisting(p)}
-              disabled={busy}
-              className="group flex items-center justify-between rounded-lg border border-zinc-800 bg-zinc-900/50 px-4 py-3 text-left transition hover:border-zinc-700 hover:bg-zinc-900"
+              onClick={() => !busy && openExisting(p)}
+              onMouseLeave={() => setConfirmRemove((c) => (c === p.id ? null : c))}
+              className="group flex cursor-pointer items-center justify-between rounded-lg border border-zinc-800 bg-zinc-900/50 px-4 py-3 text-left transition hover:border-zinc-700 hover:bg-zinc-900"
             >
               <div className="min-w-0">
                 <div className="flex items-center gap-2 font-medium">
@@ -152,7 +164,7 @@ export default function Home() {
                   {p.source === 'github' ? p.repoUrl ?? p.rootPath : p.rootPath}
                 </div>
               </div>
-              <div className="flex shrink-0 gap-1.5 pl-3">
+              <div className="flex shrink-0 items-center gap-1.5 pl-3">
                 {p.detectedStacks.map((s, i) => (
                   <span
                     key={i}
@@ -161,8 +173,40 @@ export default function Home() {
                     {s.kind}
                   </span>
                 ))}
+                {confirmRemove === p.id ? (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      removeProject(p);
+                    }}
+                    title="Removes the project, its snapshots, environments, collections and scenarios from Vision. Files on disk are untouched."
+                    className="rounded border border-red-500/40 bg-red-950/40 px-2 py-1 text-[10px] font-semibold text-red-300 transition hover:bg-red-950/70"
+                  >
+                    Remove?
+                  </button>
+                ) : (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setConfirmRemove(p.id);
+                    }}
+                    aria-label={`Remove ${p.name} from history`}
+                    title="Remove from history"
+                    className="rounded p-1 text-zinc-600 opacity-0 transition hover:bg-zinc-800 hover:text-red-400 group-hover:opacity-100"
+                  >
+                    <svg
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      className="h-3.5 w-3.5"
+                    >
+                      <path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2M6 6l1 14a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-14M10 11v6M14 11v6" />
+                    </svg>
+                  </button>
+                )}
               </div>
-            </button>
+            </div>
           ))}
         </section>
       )}
@@ -274,18 +318,12 @@ function GithubForm({
         <div className="flex flex-col gap-2">
           <div className="flex items-center gap-2">
             <span className="text-sm text-zinc-400">Branch</span>
-            <select
+            <BranchSelect
+              branches={pre.branches}
               value={branch}
-              onChange={(e) => setBranch(e.target.value)}
-              className="flex-1 rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm outline-none focus:border-zinc-600"
-            >
-              {pre.branches.map((b) => (
-                <option key={b} value={b}>
-                  {b}
-                  {b === pre.defaultBranch ? '  (default)' : ''}
-                </option>
-              ))}
-            </select>
+              defaultBranch={pre.defaultBranch}
+              onChange={setBranch}
+            />
           </div>
           {pre.usedSystemCredential && (
             <p className="text-xs text-emerald-400">

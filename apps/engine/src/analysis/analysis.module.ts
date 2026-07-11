@@ -3,6 +3,7 @@ import { AnalysisController } from './analysis.controller';
 import { NestExtractorService } from './nest-extractor.service';
 import { NextExtractorService } from './next-extractor.service';
 import { FrontendExtractorService } from './frontend-extractor.service';
+import { InsightsService } from './insights.service';
 import { ScannerService } from './scanner.service';
 import { StackDetectorService } from './stack-detector.service';
 
@@ -13,6 +14,7 @@ import { StackDetectorService } from './stack-detector.service';
     NestExtractorService,
     NextExtractorService,
     FrontendExtractorService,
+    InsightsService,
     StackDetectorService,
   ],
   exports: [ScannerService, StackDetectorService],

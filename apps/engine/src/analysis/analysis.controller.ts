@@ -1,7 +1,14 @@
-import { Controller, Get, NotFoundException, Param } from '@nestjs/common';
+import { Body, Controller, Get, NotFoundException, Param, Post } from '@nestjs/common';
 import * as path from 'path';
-import type { GraphPayload, SnapshotSummary } from '@vision/shared';
+import type {
+  DiffImpactResult,
+  GraphPayload,
+  InsightsPayload,
+  SnapshotSummary,
+} from '@vision/shared';
 import { PrismaService } from '../prisma/prisma.service';
+import { InsightsService } from './insights.service';
+import { DiffImpactDto } from './diff-impact.dto';
 
 /** Builds a github.com blob link from an absolute clone-dir path, if possible. */
 function blobUrl(
@@ -17,13 +24,26 @@ function blobUrl(
 
 @Controller('snapshots')
 export class AnalysisController {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly insights: InsightsService,
+  ) {}
 
   @Get(':id')
   async snapshot(@Param('id') id: string): Promise<SnapshotSummary> {
     const snap = await this.prisma.snapshot.findUnique({ where: { id } });
     if (!snap) throw new NotFoundException(`Snapshot ${id} not found`);
     return this.toSummary(snap);
+  }
+
+  @Get(':id/insights')
+  insightsFor(@Param('id') id: string): Promise<InsightsPayload> {
+    return this.insights.insights(id);
+  }
+
+  @Post(':id/diff-impact')
+  diffImpact(@Param('id') id: string, @Body() dto: DiffImpactDto): Promise<DiffImpactResult> {
+    return this.insights.diffImpact(id, dto.base);
   }
 
   @Get(':id/graph')
@@ -50,6 +70,7 @@ export class AnalysisController {
         kind: m.kind as never,
         filePath: m.filePath,
         endpointCount: m.endpoints.length,
+        isGlobal: m.isGlobal,
       })),
       endpoints: snap.modules.flatMap((m) =>
         m.endpoints.map((e) => ({
@@ -88,6 +109,7 @@ export class AnalysisController {
         type: e.type as never,
         confidence: e.confidence,
         manual: e.manual,
+        meta: e.metaJson ? JSON.parse(e.metaJson) : undefined,
       })),
     };
   }

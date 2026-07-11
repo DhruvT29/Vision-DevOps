@@ -1,4 +1,9 @@
-import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { OpenProjectResponse, ProjectSummary } from '@vision/shared';
@@ -44,6 +49,18 @@ export class ProjectsService {
       repoCloneUrl: resolved.cloneUrl,
       repoBranch: resolved.branch,
     });
+  }
+
+  /**
+   * Remove a project from history. Cascades to its snapshots, environments,
+   * collections and scenarios in the DB; never touches the source directory
+   * or a cached GitHub clone (re-opening reuses the cache).
+   */
+  async remove(id: string): Promise<{ ok: true }> {
+    const project = await this.prisma.project.findUnique({ where: { id } });
+    if (!project) throw new NotFoundException(`Project ${id} not found`);
+    await this.prisma.project.delete({ where: { id } });
+    return { ok: true };
   }
 
   async open(rootPath: string, meta?: GithubMeta): Promise<OpenProjectResponse> {

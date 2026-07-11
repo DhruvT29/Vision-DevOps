@@ -1,4 +1,4 @@
-import { Body, Controller, Get, NotFoundException, Param, Post } from '@nestjs/common';
+import { Body, Controller, Delete, Get, NotFoundException, Param, Post } from '@nestjs/common';
 import type {
   GithubPreflightResult,
   OpenProjectResponse,
@@ -36,6 +36,11 @@ export class ProjectsController {
   @Get()
   list(): Promise<ProjectSummary[]> {
     return this.svc.list();
+  }
+
+  @Delete(':id')
+  remove(@Param('id') id: string): Promise<{ ok: true }> {
+    return this.svc.remove(id);
   }
 
   @Get(':id/latest-snapshot')

@@ -92,12 +92,19 @@ export class ScannerService {
 
       // moduleName → its extraction (create DB rows lazily, only for modules
       // that actually own controllers, plus a fallback bucket)
+      const globalByName = new Map(extraction.modules.map((m) => [m.name, m.isGlobal === true]));
       const moduleRowIds = new Map<string, string>();
       const moduleRowFor = async (name: string, filePath: string) => {
         let id = moduleRowIds.get(name);
         if (!id) {
           const row = await this.prisma.moduleNode.create({
-            data: { snapshotId, name, kind: moduleKind, filePath },
+            data: {
+              snapshotId,
+              name,
+              kind: moduleKind,
+              filePath,
+              isGlobal: globalByName.get(name) ?? false,
+            },
           });
           id = row.id;
           moduleRowIds.set(name, id);
@@ -134,6 +141,75 @@ export class ScannerService {
           createdEndpoints.push({ id: row.id, method: ep.method, fullPath: ep.fullPath });
           endpointCount++;
         }
+      }
+
+      // Coupling evidence (file pairs + symbols) keyed by module-name pair —
+      // attached to declared edges when the wiring has file traffic under it,
+      // and to file-imports edges for undeclared coupling.
+      const fileDeps = 'fileDependencies' in extraction ? extraction.fileDependencies : [];
+      const couplingByPair = new Map(fileDeps.map((d) => [`${d.from}->${d.to}`, d]));
+      const metaJsonFor = (from: string, to: string): string | undefined => {
+        const dep = couplingByPair.get(`${from}->${to}`);
+        if (!dep) return undefined;
+        return JSON.stringify({
+          count: dep.count,
+          files: dep.files.map((f) => ({
+            from: path.relative(rootPath, f.from).replace(/\\/g, '/'),
+            to: path.relative(rootPath, f.to).replace(/\\/g, '/'),
+          })),
+          symbols: dep.symbols,
+        });
+      };
+
+      // Module → module dependency edges from @Module({ imports: [...] }).
+      // Rows are ensured for every project module so provider-only modules
+      // (no controllers) still appear in the dependency graph; imports of
+      // external modules (ConfigModule, TypeOrmModule, ...) are skipped.
+      const seenImportPairs = new Set<string>();
+      for (const mod of extraction.modules) {
+        const sourceId = await moduleRowFor(mod.name, mod.filePath);
+        for (const importedName of mod.importedModuleNames ?? []) {
+          if (importedName === mod.name) continue;
+          const targetFile = moduleFileByName.get(importedName);
+          if (!targetFile) continue;
+          const targetId = await moduleRowFor(importedName, targetFile);
+          const key = `${sourceId}->${targetId}`;
+          if (seenImportPairs.has(key)) continue;
+          seenImportPairs.add(key);
+          await this.prisma.graphEdge.create({
+            data: {
+              snapshotId,
+              sourceId,
+              targetId,
+              type: 'imports',
+              metaJson: metaJsonFor(mod.name, importedName),
+            },
+          });
+          edgeCount++;
+        }
+      }
+
+      // Hidden coupling: raw file imports crossing module folders without
+      // @Module wiring. Pairs already declared above are skipped — file-level
+      // edges only mark coupling the wiring doesn't show.
+      for (const dep of fileDeps) {
+        if (dep.from === dep.to) continue;
+        const fromFile = moduleFileByName.get(dep.from);
+        const toFile = moduleFileByName.get(dep.to);
+        if (!fromFile || !toFile) continue;
+        const sourceId = await moduleRowFor(dep.from, fromFile);
+        const targetId = await moduleRowFor(dep.to, toFile);
+        if (seenImportPairs.has(`${sourceId}->${targetId}`)) continue;
+        await this.prisma.graphEdge.create({
+          data: {
+            snapshotId,
+            sourceId,
+            targetId,
+            type: 'file-imports',
+            metaJson: metaJsonFor(dep.from, dep.to),
+          },
+        });
+        edgeCount++;
       }
     }
 

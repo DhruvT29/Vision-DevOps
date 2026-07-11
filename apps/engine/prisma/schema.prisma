@@ -53,6 +53,7 @@ model ModuleNode {
   name       String
   kind       String // nest-module | next-api-group | react-feature
   filePath   String
+  isGlobal   Boolean    @default(false) // Nest @Global() — providers reachable without imports
   endpoints  Endpoint[]
 
   @@index([snapshotId])
@@ -199,9 +200,10 @@ model GraphEdge {
   snapshot   Snapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
   sourceId   String
   targetId   String
-  type       String // contains | calls | imports
+  type       String // contains | calls | imports | file-imports
   confidence Float    @default(1)
   manual     Boolean  @default(false)
+  metaJson   String? // edge-type-specific evidence, e.g. file-imports: { count, files }
 
   @@index([snapshotId])
 }
