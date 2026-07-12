@@ -64,6 +64,7 @@ function NavSidebar({ snapshotId }: { snapshotId: string }) {
     { href: `/project/${snapshotId}`, label: 'Home', icon: <HomeIcon /> },
     { href: `/graph/${snapshotId}`, label: 'Endpoint Graph', icon: <GraphIcon /> },
     { href: `/dependencies/${snapshotId}`, label: 'Dependency Graph', icon: <DependencyIcon /> },
+    { href: `/db-blast/${snapshotId}`, label: 'DB Blast Analysis', icon: <DatabaseIcon /> },
     { href: `/insights/${snapshotId}`, label: 'Insights', icon: <InsightsIcon /> },
   ];
 
@@ -139,6 +140,16 @@ function DependencyIcon() {
       <rect x="14" y="14" width="7" height="7" rx="1.5" />
       <path d="M12 6.5h3.5a2 2 0 0 1 2 2V12" />
       <path d="M12 17.5H8.5a2 2 0 0 1-2-2V12" />
+    </svg>
+  );
+}
+
+function DatabaseIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4">
+      <ellipse cx="12" cy="5" rx="8" ry="3" />
+      <path d="M4 5v14c0 1.66 3.58 3 8 3s8-1.34 8-3V5" />
+      <path d="M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3" />
     </svg>
   );
 }

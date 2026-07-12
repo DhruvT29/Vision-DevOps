@@ -1,6 +1,8 @@
 import type {
   CollectionsPayload,
   CollectionSummary,
+  DbDiffRequest,
+  DbDiffResult,
   DiffImpactResult,
   EnvironmentSummary,
   ExecutionSummary,
@@ -62,6 +64,12 @@ export const api = {
   snapshot: (id: string) => req<SnapshotSummary>(`/snapshots/${id}`),
   graph: (id: string) => req<GraphPayload>(`/snapshots/${id}/graph`),
   insights: (id: string) => req<InsightsPayload>(`/snapshots/${id}/insights`),
+  migrationFiles: (id: string) => req<string[]>(`/snapshots/${id}/migration-files`),
+  dbDiff: (id: string, body: DbDiffRequest) =>
+    req<DbDiffResult>(`/snapshots/${id}/db-diff`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
   diffImpact: (id: string, base?: string) =>
     req<DiffImpactResult>(`/snapshots/${id}/diff-impact`, {
       method: 'POST',

@@ -58,7 +58,7 @@ type DepFlowNode = Node<
   'module'
 >;
 
-const IMPACT_NODE_STYLE: Record<Hue, Record<ImpactTier, string>> = {
+export const IMPACT_NODE_STYLE: Record<Hue, Record<ImpactTier, string>> = {
   rose: {
     direct: 'border-rose-500/70 bg-rose-950/45 shadow-lg shadow-rose-500/10',
     indirect: 'border-rose-500/35 bg-rose-950/25',
@@ -80,7 +80,7 @@ const LEVEL_STYLE: Record<ImpactLevel, string> = {
 };
 
 /** Module card — selectable, dims when unrelated, impact-graded when analyzing. */
-function DependencyModuleNode({ data }: NodeProps<DepFlowNode>) {
+export function DependencyModuleNode({ data }: NodeProps<DepFlowNode>) {
   const { module: mod, selected, dimmed, impact, hue } = data;
   const border = selected
     ? 'border-sky-500/60 bg-sky-950/60 shadow-lg shadow-sky-500/10'
@@ -159,7 +159,7 @@ function sideOf(from: { x: number; y: number }, to: { x: number; y: number }): P
  * Mutual pairs get a perpendicular `data.offset` so the two arrows run side
  * by side in opposite directions.
  */
-function FloatingDependencyEdge({ id, source, target, style, markerEnd, data }: EdgeProps) {
+export function FloatingDependencyEdge({ id, source, target, style, markerEnd, data }: EdgeProps) {
   const sourceNode = useInternalNode(source);
   const targetNode = useInternalNode(target);
   if (!sourceNode || !targetNode) return null;
@@ -197,7 +197,7 @@ function FloatingDependencyEdge({ id, source, target, style, markerEnd, data }: 
 
 const depEdgeTypes = { floating: FloatingDependencyEdge };
 
-function Segmented<T extends string>({
+export function Segmented<T extends string>({
   value,
   onChange,
   options,
@@ -224,7 +224,7 @@ function Segmented<T extends string>({
   );
 }
 
-function LevelBadge({ level }: { level: ImpactLevel }) {
+export function LevelBadge({ level }: { level: ImpactLevel }) {
   return (
     <span
       className={`rounded border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${LEVEL_STYLE[level]}`}
@@ -237,7 +237,7 @@ function LevelBadge({ level }: { level: ImpactLevel }) {
 
 // ── Impact math ───────────────────────────────────────────────────────────────
 
-interface ImpactResult {
+export interface ImpactResult {
   roots: Set<string>;
   /** moduleId → BFS distance from the nearest root (≥1) */
   distance: Map<string, number>;
@@ -254,7 +254,7 @@ interface ImpactResult {
   level: ImpactLevel;
 }
 
-function computeImpact(
+export function computeImpact(
   rootIds: string[],
   direction: Direction,
   graph: GraphPayload,
@@ -331,7 +331,7 @@ function computeImpact(
 }
 
 /** Frontend call sites whose linked endpoint lives in an affected module. */
-function callSitesAtRisk(graph: GraphPayload, affected: Set<string>): FrontendCall[] {
+export function callSitesAtRisk(graph: GraphPayload, affected: Set<string>): FrontendCall[] {
   const endpointModule = new Map(graph.endpoints.map((e) => [e.id, e.moduleId]));
   const callIds = new Set<string>();
   for (const e of graph.edges) {
@@ -876,7 +876,7 @@ function GitDiffIcon() {
 
 // ── Panels ────────────────────────────────────────────────────────────────────
 
-function ImpactSummaryCard({
+export function ImpactSummaryCard({
   impact,
   direction,
   isGlobalRoot,
@@ -959,7 +959,10 @@ function DependencyPanel({
     edges
       .flatMap((e) => {
         const m = moduleById.get(other(e));
-        return m ? [{ module: m, meta: e.meta, fileLevel: e.type === 'file-imports' }] : [];
+        // dep edges only ever carry CouplingMeta (touch/fk meta lives on other edge types)
+        return m
+          ? [{ module: m, meta: e.meta as CouplingMeta | undefined, fileLevel: e.type === 'file-imports' }]
+          : [];
       })
       .sort((a, b) => a.module.name.localeCompare(b.module.name));
 
@@ -1285,7 +1288,7 @@ function DiffPanel({
 
 // ── Shared list pieces ────────────────────────────────────────────────────────
 
-function CallsAtRiskList({ calls, hasFrontend }: { calls: FrontendCall[]; hasFrontend: boolean }) {
+export function CallsAtRiskList({ calls, hasFrontend }: { calls: FrontendCall[]; hasFrontend: boolean }) {
   if (calls.length === 0) {
     return hasFrontend ? (
       <p className="text-xs text-zinc-600">No linked frontend call site hits the affected modules.</p>
@@ -1422,7 +1425,7 @@ function RelationList({
   );
 }
 
-function ImpactList({
+export function ImpactList({
   title,
   rows,
   hue,
