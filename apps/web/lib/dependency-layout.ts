@@ -3,23 +3,68 @@ import { MODULE_NODE_SIZE } from '@/components/graph-nodes';
 
 const NODE_W = MODULE_NODE_SIZE.width;
 const NODE_H = MODULE_NODE_SIZE.height;
-const GAP_X = 70;
-const GAP_Y = 50;
-const IDEAL = 230; // spring rest length in simulation space
+const GAP_X = 60;
+const GAP_Y = 40;
+const IDEAL = 190; // spring rest length in simulation space
 const ITERATIONS = 400;
-const STRETCH_X = 1.9; // widen the result — cards are ~4x wider than tall
+const STRETCH_X = 1.5; // widen the result — cards are ~4x wider than tall
+const BLOCK_GAP = 170; // gap between the force web and the parked grid
+const REPULSE_CUTOFF = IDEAL * 2.5; // repulsion range — keeps far clusters from drifting apart
+const GRAVITY = 0.08; // pull toward the center — compacts the whole web
 
 /**
- * Deterministic force-directed layout (Fruchterman–Reingold flavored) for the
- * module dependency graph. Unlike dagre's rank bands this spreads modules
- * radially, so dependency lines fan out in every direction instead of
- * bundling into a left-to-right pipeline. A final pass separates any cards
- * that still overlap. Deterministic: same input always yields the same
- * positions (no random seed), so re-renders don't shuffle the graph.
+ * Deterministic force-directed layout (Fruchterman–Reingold flavored) for
+ * dependency-style graphs. Nodes touched by an edge form a radial web laid
+ * out by the simulation; edge-less nodes are parked in a compact grid beside
+ * it instead of being flung to the periphery by unopposed repulsion.
+ * Deterministic: same input always yields the same positions.
  */
 export function layoutDependencyGraph(nodes: Node[], edges: Edge[]): Node[] {
+  if (nodes.length === 0) return nodes;
+
+  const connectedIds = new Set<string>();
+  for (const e of edges) {
+    connectedIds.add(e.source);
+    connectedIds.add(e.target);
+  }
+  const connected = nodes.filter((n) => connectedIds.has(n.id));
+  const isolated = nodes.filter((n) => !connectedIds.has(n.id));
+
+  const laid = simulate(connected, edges);
+
+  // bounding box of the web, to place the parked grid beside it
+  let maxX = 0;
+  let minY = 0;
+  let maxY = 0;
+  if (laid.length > 0) {
+    maxX = Math.max(...laid.map((n) => n.position.x + NODE_W));
+    minY = Math.min(...laid.map((n) => n.position.y));
+    maxY = Math.max(...laid.map((n) => n.position.y + NODE_H));
+  }
+
+  // compact, roughly 16:9 grid for edge-less nodes
+  const cellW = NODE_W + GAP_X;
+  const cellH = NODE_H + GAP_Y;
+  const cols = Math.max(1, Math.round(Math.sqrt((isolated.length * (16 / 9) * cellH) / cellW)));
+  const rows = Math.ceil(isolated.length / cols);
+  const gridHeight = rows * cellH - GAP_Y;
+  const gridTop = laid.length > 0 ? (minY + maxY) / 2 - gridHeight / 2 : 0;
+  const gridLeft = laid.length > 0 ? maxX + BLOCK_GAP : 0;
+
+  const gridded = isolated.map((node, i) => ({
+    ...node,
+    position: {
+      x: gridLeft + (i % cols) * cellW,
+      y: gridTop + Math.floor(i / cols) * cellH,
+    },
+  }));
+
+  return [...laid, ...gridded];
+}
+
+function simulate(nodes: Node[], edges: Edge[]): Node[] {
   const n = nodes.length;
-  if (n === 0) return nodes;
+  if (n === 0) return [];
 
   const index = new Map(nodes.map((node, i) => [node.id, i]));
   const xs = new Float64Array(n);
@@ -33,7 +78,7 @@ export function layoutDependencyGraph(nodes: Node[], edges: Edge[]): Node[] {
     ys[i] = Math.sin(angle) * radius;
   }
 
-  // one spring per connected pair (mutual imports collapse into one)
+  // one spring per connected pair (mutual edges collapse into one)
   const links: [number, number][] = [];
   const seen = new Set<string>();
   for (const e of edges) {
@@ -54,12 +99,14 @@ export function layoutDependencyGraph(nodes: Node[], edges: Edge[]): Node[] {
     fx.fill(0);
     fy.fill(0);
 
-    // pairwise repulsion
+    // pairwise repulsion — short-ranged, so distant clusters don't keep
+    // shoving each other further apart
     for (let i = 0; i < n; i++) {
       for (let j = i + 1; j < n; j++) {
         const dx = xs[i] - xs[j];
         const dy = ys[i] - ys[j];
         const d = Math.sqrt(dx * dx + dy * dy) + 0.01;
+        if (d > REPULSE_CUTOFF) continue;
         const f = (IDEAL * IDEAL) / d;
         const ux = dx / d;
         const uy = dy / d;
@@ -84,10 +131,10 @@ export function layoutDependencyGraph(nodes: Node[], edges: Edge[]): Node[] {
       fy[t] += uy * f;
     }
 
-    // light gravity keeps disconnected modules near the component
+    // gravity keeps separate FK/dependency islands from drifting apart
     for (let i = 0; i < n; i++) {
-      fx[i] -= xs[i] * 0.03;
-      fy[i] -= ys[i] * 0.03;
+      fx[i] -= xs[i] * GRAVITY;
+      fy[i] -= ys[i] * GRAVITY;
     }
 
     for (let i = 0; i < n; i++) {
