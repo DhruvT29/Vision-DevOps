@@ -42,8 +42,24 @@ model Snapshot {
   modules       ModuleNode[]
   frontendCalls FrontendCall[]
   edges         GraphEdge[]
+  entities      EntityNode[]
 
   @@index([projectId])
+}
+
+// Database entity (TypeORM @Entity class) — the schema layer under modules
+model EntityNode {
+  id          String   @id @default(cuid())
+  snapshotId  String
+  snapshot    Snapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+  name        String // class name, e.g. "User"
+  tableName   String // resolved table name, e.g. "users"
+  filePath    String
+  line        Int      @default(1)
+  moduleId    String? // owning ModuleNode row id
+  columnsJson String   @default("[]")
+
+  @@index([snapshotId])
 }
 
 model ModuleNode {

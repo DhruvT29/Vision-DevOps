@@ -51,6 +51,8 @@ export interface SnapshotStats {
   endpoints: number;
   frontendCalls: number;
   edges: number;
+  /** database entities found (absent on snapshots scanned before the DB layer) */
+  tables?: number;
   durationMs: number;
 }
 
@@ -144,11 +146,52 @@ export interface FrontendCall {
 }
 
 /**
- * `imports`      — declared NestJS wiring: @Module({ imports: [...] })
- * `file-imports` — hidden coupling: raw import statements crossing module
- *                  folders without the @Module wiring (DTOs, helpers, ...)
+ * `imports`       — declared NestJS wiring: @Module({ imports: [...] })
+ * `file-imports`  — hidden coupling: raw import statements crossing module
+ *                   folders without the @Module wiring (DTOs, helpers, ...)
+ * `fk`            — entity → entity foreign-key relation (@ManyToOne etc.)
+ * `touches-table` — module → entity: the module reads/writes that table
  */
-export type EdgeType = 'contains' | 'calls' | 'imports' | 'file-imports';
+export type EdgeType = 'contains' | 'calls' | 'imports' | 'file-imports' | 'fk' | 'touches-table';
+
+// ── Database entity layer ────────────────────────────────────────────────────
+
+export interface EntityColumn {
+  name: string;
+  type?: string;
+}
+
+/** TypeORM @Entity class — one database table. */
+export interface DbEntityNode {
+  id: string;
+  snapshotId: string;
+  /** class name, e.g. "User" */
+  name: string;
+  /** resolved table name, e.g. "users" */
+  tableName: string;
+  filePath: string;
+  line: number;
+  /** owning module's row id (the module whose folder defines the entity) */
+  moduleId: string | null;
+  columns: EntityColumn[];
+  /** github projects only — link to the defining line on github.com */
+  sourceUrl?: string;
+}
+
+export type TableTouchKind = 'repository' | 'relation' | 'import' | 'raw-sql';
+
+/** Evidence on a `touches-table` edge (module → entity). */
+export interface TableTouchMeta {
+  via: TableTouchKind[];
+  /** sample of files where the access happens, project-root relative */
+  files?: string[];
+}
+
+/** Evidence on an `fk` edge (entity → entity). */
+export interface FkMeta {
+  /** relation property names, e.g. ["user"] */
+  properties: string[];
+}
 
 /**
  * Coupling evidence carried by dependency edges. On `file-imports` edges it
@@ -175,8 +218,8 @@ export interface GraphEdge {
   confidence: number;
   /** true when a user manually created/confirmed the edge */
   manual: boolean;
-  /** coupling evidence (files + symbols crossing the module boundary) */
-  meta?: CouplingMeta;
+  /** edge-type-specific evidence — CouplingMeta on imports/file-imports, TableTouchMeta on touches-table, FkMeta on fk */
+  meta?: CouplingMeta | TableTouchMeta | FkMeta;
 }
 
 // ── Insights (health / churn / ownership) & diff impact ─────────────────────
@@ -237,6 +280,26 @@ export interface DiffImpactResult {
   moduleIds: string[];
 }
 
+// ── DB blast analysis ────────────────────────────────────────────────────────
+
+export interface DbDiffRequest {
+  /** raw SQL to analyze (pasted migration) */
+  sql?: string;
+  /** project-root-relative path of a migration file to analyze instead */
+  migrationPath?: string;
+}
+
+export interface DbDiffResult {
+  /** what was analyzed: "sql" or the migration file path */
+  source: string;
+  /** table names found in the migration/SQL */
+  tables: string[];
+  /** snapshot entity ids whose tableName matched */
+  matchedEntityIds: string[];
+  /** table names with no matching entity in the snapshot */
+  unmatched: string[];
+}
+
 /** Full graph payload the engine returns for a snapshot. */
 export interface GraphPayload {
   snapshot: SnapshotSummary;
@@ -244,6 +307,8 @@ export interface GraphPayload {
   endpoints: Endpoint[];
   frontendCalls: FrontendCall[];
   edges: GraphEdge[];
+  /** database entity layer (TypeORM @Entity classes); empty for older snapshots */
+  entities: DbEntityNode[];
 }
 
 // ── Environments & request running ─────────────────────────────────────────

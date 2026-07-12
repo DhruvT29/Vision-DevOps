@@ -1,9 +1,11 @@
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { execFile } from 'child_process';
+import * as fs from 'fs';
 import * as path from 'path';
 import type {
   ChangedFile,
   ContributorStat,
+  DbDiffResult,
   DiffImpactResult,
   InsightsPayload,
 } from '@vision/shared';
@@ -212,6 +214,105 @@ export class InsightsService {
     return { base: resolvedBase, changedFiles, moduleIds };
   }
 
+  // ── DB blast: migration files & SQL table extraction ───────────────────────
+
+  /** Candidate migration files under the project root (paths root-relative). */
+  async migrationFiles(snapshotId: string): Promise<string[]> {
+    const { project } = await this.load(snapshotId);
+    const results: string[] = [];
+    const walk = (dir: string, depth: number) => {
+      if (depth > 6 || results.length >= 200) return;
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        if (results.length >= 200) return;
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (entry.name === 'node_modules' || entry.name === 'dist' || entry.name.startsWith('.'))
+            continue;
+          walk(full, depth + 1);
+        } else if (
+          /\.(ts|js|sql)$/i.test(entry.name) &&
+          /migration/i.test(path.relative(project.rootPath, full))
+        ) {
+          results.push(path.relative(project.rootPath, full).replace(/\\/g, '/'));
+        }
+      }
+    };
+    walk(project.rootPath, 0);
+    return results.sort();
+  }
+
+  /**
+   * Extract the tables a migration (file or pasted SQL) touches and match
+   * them against the snapshot's entities. Read-only — the file is parsed with
+   * regexes, never executed.
+   */
+  async dbDiff(
+    snapshotId: string,
+    dto: { sql?: string; migrationPath?: string },
+  ): Promise<DbDiffResult> {
+    const { snap, project } = await this.load(snapshotId);
+
+    let text: string;
+    let source: string;
+    if (dto.migrationPath?.trim()) {
+      const abs = path.resolve(project.rootPath, dto.migrationPath);
+      const root = path.resolve(project.rootPath);
+      if (!abs.toLowerCase().startsWith(root.toLowerCase() + path.sep)) {
+        throw new BadRequestException('Path escapes the project root');
+      }
+      try {
+        text = fs.readFileSync(abs, 'utf-8');
+      } catch {
+        throw new BadRequestException(`Cannot read ${dto.migrationPath}`);
+      }
+      source = dto.migrationPath;
+    } else if (dto.sql?.trim()) {
+      text = dto.sql;
+      source = 'sql';
+    } else {
+      throw new BadRequestException('Provide sql or migrationPath');
+    }
+    if (text.length > 2_000_000) throw new BadRequestException('Input too large');
+
+    const tables = new Set<string>();
+    const patterns = [
+      // plain SQL DDL/DML
+      /\b(?:alter|create|drop|truncate)\s+table\s+(?:if\s+(?:not\s+)?exists\s+)?[`"']?([\w.]+)[`"']?/gi,
+      /\b(?:insert\s+into|delete\s+from)\s+[`"']?([\w.]+)[`"']?/gi,
+      /\bupdate\s+[`"']?([\w.]+)[`"']?\s+set\b/gi,
+      /\breferences\s+[`"']?([\w.]+)[`"']?\s*\(/gi,
+      // TypeORM QueryRunner API: addColumn('users', ...), dropTable('users'), ...
+      /queryRunner\.\w*(?:table|column|index|foreignkey|primarykey|constraint)\w*\(\s*['"`]([\w.]+)['"`]/gi,
+      // new Table({ name: 'users', ... })
+      /new\s+Table\s*\(\s*\{[^}]*?name:\s*['"`]([\w.]+)['"`]/gi,
+    ];
+    for (const re of patterns) {
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(text))) {
+        const t = m[1].split('.').pop()?.toLowerCase();
+        if (t) tables.add(t);
+      }
+    }
+
+    const matchedEntityIds: string[] = [];
+    const matchedNames = new Set<string>();
+    for (const ent of snap.entities) {
+      if (tables.has(ent.tableName.toLowerCase())) {
+        matchedEntityIds.push(ent.id);
+        matchedNames.add(ent.tableName.toLowerCase());
+      }
+    }
+    const unmatched = [...tables].filter((t) => !matchedNames.has(t)).sort();
+
+    return { source, tables: [...tables].sort(), matchedEntityIds, unmatched };
+  }
+
   /** Resolve a user-supplied ref; for github clones try fetching it first. */
   private async resolveRef(
     project: { rootPath: string; source: string },
@@ -247,7 +348,7 @@ export class InsightsService {
   private async load(snapshotId: string) {
     const snap = await this.prisma.snapshot.findUnique({
       where: { id: snapshotId },
-      include: { modules: true },
+      include: { modules: true, entities: true },
     });
     if (!snap) throw new NotFoundException(`Snapshot ${snapshotId} not found`);
     const project = await this.prisma.project.findUnique({ where: { id: snap.projectId } });

@@ -1,6 +1,7 @@
 import { Body, Controller, Get, NotFoundException, Param, Post } from '@nestjs/common';
 import * as path from 'path';
 import type {
+  DbDiffResult,
   DiffImpactResult,
   GraphPayload,
   InsightsPayload,
@@ -9,6 +10,7 @@ import type {
 import { PrismaService } from '../prisma/prisma.service';
 import { InsightsService } from './insights.service';
 import { DiffImpactDto } from './diff-impact.dto';
+import { DbDiffDto } from './db-diff.dto';
 
 /** Builds a github.com blob link from an absolute clone-dir path, if possible. */
 function blobUrl(
@@ -46,6 +48,16 @@ export class AnalysisController {
     return this.insights.diffImpact(id, dto.base);
   }
 
+  @Get(':id/migration-files')
+  migrationFiles(@Param('id') id: string): Promise<string[]> {
+    return this.insights.migrationFiles(id);
+  }
+
+  @Post(':id/db-diff')
+  dbDiff(@Param('id') id: string, @Body() dto: DbDiffDto): Promise<DbDiffResult> {
+    return this.insights.dbDiff(id, dto);
+  }
+
   @Get(':id/graph')
   async graph(@Param('id') id: string): Promise<GraphPayload> {
     const snap = await this.prisma.snapshot.findUnique({
@@ -54,6 +66,7 @@ export class AnalysisController {
         modules: { include: { endpoints: true }, orderBy: { name: 'asc' } },
         frontendCalls: true,
         edges: true,
+        entities: { orderBy: { tableName: 'asc' } },
       },
     });
     if (!snap) throw new NotFoundException(`Snapshot ${id} not found`);
@@ -110,6 +123,17 @@ export class AnalysisController {
         confidence: e.confidence,
         manual: e.manual,
         meta: e.metaJson ? JSON.parse(e.metaJson) : undefined,
+      })),
+      entities: snap.entities.map((e) => ({
+        id: e.id,
+        snapshotId: e.snapshotId,
+        name: e.name,
+        tableName: e.tableName,
+        filePath: e.filePath,
+        line: e.line,
+        moduleId: e.moduleId,
+        columns: JSON.parse(e.columnsJson),
+        sourceUrl: project ? blobUrl(project, e.filePath, e.line) : undefined,
       })),
     };
   }

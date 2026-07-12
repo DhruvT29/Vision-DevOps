@@ -15,7 +15,9 @@ import type {
   BodyField,
   EndpointAuth,
   EndpointParam,
+  EntityColumn,
   HttpMethod,
+  TableTouchKind,
 } from '@vision/shared';
 
 const HTTP_DECORATORS: Record<string, HttpMethod> = {
@@ -72,12 +74,55 @@ export interface ModuleFileDependency {
   symbols: { name: string; count: number }[];
 }
 
+/** TypeORM @Entity class — one database table. */
+export interface ExtractedEntity {
+  className: string;
+  tableName: string;
+  filePath: string;
+  line: number;
+  columns: EntityColumn[];
+  /** relation target entity class names with the declaring property */
+  relations: { property: string; target: string }[];
+  /** module owning the entity's folder (filled after ownership resolution) */
+  ownerModule?: string;
+}
+
+/** One place where a module reads/writes an entity's table. */
+export interface ExtractedTableTouch {
+  /** module name */
+  module: string;
+  /** entity class name */
+  entity: string;
+  via: TableTouchKind;
+  /** absolute path of the file where the access happens */
+  file: string;
+}
+
 export interface NestExtraction {
   globalPrefix: string | null;
   modules: ExtractedModule[];
   controllers: ExtractedController[];
   fileDependencies: ModuleFileDependency[];
+  entities: ExtractedEntity[];
+  tableTouches: ExtractedTableTouch[];
 }
+
+const COLUMN_DECORATORS = new Set([
+  'Column',
+  'PrimaryColumn',
+  'PrimaryGeneratedColumn',
+  'CreateDateColumn',
+  'UpdateDateColumn',
+  'DeleteDateColumn',
+  'VersionColumn',
+  'ObjectIdColumn',
+]);
+
+const RELATION_DECORATORS = new Set(['ManyToOne', 'OneToMany', 'OneToOne', 'ManyToMany']);
+
+/** query/query-builder methods whose string args may reference a table */
+const SQL_CALL_RE =
+  /\.(query|createQueryBuilder|from|leftJoin|leftJoinAndSelect|innerJoin|innerJoinAndSelect|rightJoin)$/;
 
 /**
  * Static analysis of a NestJS source tree via ts-morph. The target project is
@@ -112,6 +157,8 @@ export class NestExtractorService {
     const modules: ExtractedModule[] = [];
     const controllers: ExtractedController[] = [];
 
+    const entities: ExtractedEntity[] = [];
+
     for (const file of files) {
       for (const cls of file.getClasses()) {
         if (cls.getDecorator('Module')) {
@@ -121,12 +168,20 @@ export class NestExtractorService {
         if (cls.getDecorator('Controller')) {
           controllers.push(this.extractController(cls, file, globalPrefix));
         }
+        if (cls.getDecorator('Entity')) {
+          const ent = this.extractEntity(cls, file);
+          if (ent) entities.push(ent);
+        }
       }
     }
 
-    const fileDependencies = this.extractFileDependencies(project, modules, srcDir);
+    const ownerOf = this.buildOwnerResolver(modules, srcDir);
+    for (const ent of entities) ent.ownerModule = ownerOf(ent.filePath);
 
-    return { globalPrefix, modules, controllers, fileDependencies };
+    const fileDependencies = this.extractFileDependencies(project, ownerOf);
+    const tableTouches = this.extractTableTouches(project, entities, ownerOf);
+
+    return { globalPrefix, modules, controllers, fileDependencies, entities, tableTouches };
   }
 
   // ── Global prefix (e.g. app.setGlobalPrefix('api')) ───────────────────────
@@ -190,21 +245,26 @@ export class NestExtractorService {
    * own nothing, so root-level shared files don't smear every import into one
    * bucket.
    */
-  private extractFileDependencies(
-    project: Project,
-    modules: ExtractedModule[],
-    srcDir: string,
-  ): ModuleFileDependency[] {
+  /**
+   * File path → owning module name. A module owns its directory subtree,
+   * deepest module winning; modules defined directly at the src root
+   * (typically AppModule) own nothing, so root-level shared files don't smear
+   * every import into one bucket.
+   */
+  private buildOwnerResolver(modules: ExtractedModule[], srcDir: string) {
     const srcRoot = srcDir.replace(/\\/g, '/');
     const owners = modules
       .map((m) => ({ name: m.name, dir: path.dirname(m.filePath).replace(/\\/g, '/') }))
       .filter((m) => m.dir !== srcRoot)
       .sort((a, b) => b.dir.length - a.dir.length);
-    if (owners.length === 0) return [];
-
-    const ownerOf = (filePath: string): string | undefined =>
+    return (filePath: string): string | undefined =>
       owners.find((o) => filePath.startsWith(o.dir + '/'))?.name;
+  }
 
+  private extractFileDependencies(
+    project: Project,
+    ownerOf: (filePath: string) => string | undefined,
+  ): ModuleFileDependency[] {
     interface PairAcc {
       from: string;
       to: string;
@@ -278,6 +338,147 @@ export class NestExtractorService {
         .sort((a, b) => b.count - a.count)
         .slice(0, 15),
     }));
+  }
+
+  // ── Database entities (TypeORM) ────────────────────────────────────────────
+
+  private extractEntity(cls: ClassDeclaration, file: SourceFile): ExtractedEntity | null {
+    const name = cls.getName();
+    if (!name) return null;
+
+    // @Entity('users') or @Entity({ name: 'users' }); default = snake_case
+    const arg = cls.getDecorator('Entity')?.getArguments()[0];
+    let tableName = arg?.asKind(SyntaxKind.StringLiteral)?.getLiteralValue() ?? null;
+    if (!tableName) {
+      const obj = arg?.asKind(SyntaxKind.ObjectLiteralExpression);
+      const nameProp = obj?.getProperty('name')?.asKind(SyntaxKind.PropertyAssignment);
+      tableName =
+        nameProp?.getInitializer()?.asKind(SyntaxKind.StringLiteral)?.getLiteralValue() ?? null;
+    }
+    tableName ??= this.snakeCase(name);
+
+    const columns: EntityColumn[] = [];
+    const relations: { property: string; target: string }[] = [];
+    for (const prop of cls.getProperties()) {
+      const decorators = prop.getDecorators();
+      if (decorators.some((d) => COLUMN_DECORATORS.has(d.getName()))) {
+        columns.push({ name: prop.getName(), type: prop.getTypeNode()?.getText() });
+      }
+      const relDec = decorators.find((d) => RELATION_DECORATORS.has(d.getName()));
+      if (relDec) {
+        // @ManyToOne(() => User, ...) → "User"
+        const body = relDec.getArguments()[0]?.asKind(SyntaxKind.ArrowFunction)?.getBody();
+        if (body && Node.isIdentifier(body)) {
+          relations.push({ property: prop.getName(), target: body.getText() });
+        }
+      }
+    }
+
+    return {
+      className: name,
+      tableName,
+      filePath: file.getFilePath(),
+      line: cls.getStartLineNumber(),
+      columns,
+      relations,
+    };
+  }
+
+  /** TypeORM's default naming: "UserAddress" → "user_address". */
+  private snakeCase(name: string): string {
+    return name.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
+  }
+
+  /**
+   * Every place a module reads/writes an entity's table:
+   *  - `repository`: @InjectRepository(Entity)
+   *  - `import`:     the entity class imported across a module boundary
+   *  - `relation`:   an entity declaring a FK to another module's entity
+   *  - `raw-sql`:    table name inside .query()/query-builder string literals
+   * Accesses from the entity's own module are skipped — ownership implies them.
+   */
+  private extractTableTouches(
+    project: Project,
+    entities: ExtractedEntity[],
+    ownerOf: (filePath: string) => string | undefined,
+  ): ExtractedTableTouch[] {
+    if (entities.length === 0) return [];
+    const byClass = new Map(entities.map((e) => [e.className, e]));
+    const byFile = new Map<string, ExtractedEntity[]>();
+    for (const e of entities) {
+      const list = byFile.get(e.filePath) ?? [];
+      list.push(e);
+      byFile.set(e.filePath, list);
+    }
+
+    const touches: ExtractedTableTouch[] = [];
+    const add = (
+      module: string | undefined,
+      entity: string,
+      via: TableTouchKind,
+      file: string,
+    ) => {
+      if (!module || byClass.get(entity)?.ownerModule === module) return;
+      touches.push({ module, entity, via, file });
+    };
+
+    // relations: entity A (module MA) declares a FK to entity B (module MB)
+    for (const ent of entities) {
+      for (const rel of ent.relations) {
+        if (byClass.has(rel.target)) {
+          add(ent.ownerModule, rel.target, 'relation', ent.filePath);
+        }
+      }
+    }
+
+    for (const file of project.getSourceFiles()) {
+      const filePath = file.getFilePath();
+      const fileModule = ownerOf(filePath);
+      if (!fileModule) continue;
+
+      // @InjectRepository(Entity)
+      for (const dec of file.getDescendantsOfKind(SyntaxKind.Decorator)) {
+        if (dec.getName() !== 'InjectRepository') continue;
+        const target = dec.getArguments()[0]?.asKind(SyntaxKind.Identifier)?.getText();
+        if (target && byClass.has(target)) add(fileModule, target, 'repository', filePath);
+      }
+
+      // entity classes imported across module boundaries
+      for (const decl of file.getImportDeclarations()) {
+        const target = decl.getModuleSpecifierSourceFile();
+        const fileEntities = target ? byFile.get(target.getFilePath()) : undefined;
+        if (!fileEntities) continue;
+        const imported = new Set(decl.getNamedImports().map((s) => s.getName()));
+        for (const ent of fileEntities) {
+          if (imported.has(ent.className)) add(fileModule, ent.className, 'import', filePath);
+        }
+      }
+
+      // raw SQL / query-builder strings mentioning a table
+      for (const call of file.getDescendantsOfKind(SyntaxKind.CallExpression)) {
+        const callee = call.getExpression().getText();
+        if (!SQL_CALL_RE.test(callee)) continue;
+        const isRawQuery = callee.endsWith('.query');
+        for (const a of call.getArguments()) {
+          const text =
+            a.asKind(SyntaxKind.StringLiteral)?.getLiteralValue() ??
+            a.asKind(SyntaxKind.NoSubstitutionTemplateLiteral)?.getLiteralValue();
+          if (!text) continue;
+          for (const ent of entities) {
+            const matched = isRawQuery
+              ? new RegExp(
+                  `\\b(from|join|into|update|table)\\s+[\`"']?${ent.tableName}\\b`,
+                  'i',
+                ).test(text)
+              : text.toLowerCase() === ent.tableName.toLowerCase() ||
+                text.toLowerCase() === ent.className.toLowerCase();
+            if (matched) add(fileModule, ent.className, 'raw-sql', filePath);
+          }
+        }
+      }
+    }
+
+    return touches;
   }
 
   /**

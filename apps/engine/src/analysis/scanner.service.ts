@@ -45,6 +45,7 @@ export class ScannerService {
     let endpointCount = 0;
     let frontendCallCount = 0;
     let edgeCount = 0;
+    let tableCount = 0;
 
     // endpoint rows created this scan, for the cross-layer linker
     const createdEndpoints: { id: string; method: string; fullPath: string }[] = [];
@@ -211,6 +212,81 @@ export class ScannerService {
         });
         edgeCount++;
       }
+
+      // ── Database entity layer: tables, FK relations, module→table touches ──
+      const entities = 'entities' in extraction ? extraction.entities : [];
+      const entityRowIds = new Map<string, string>();
+      for (const ent of entities) {
+        const row = await this.prisma.entityNode.create({
+          data: {
+            snapshotId,
+            name: ent.className,
+            tableName: ent.tableName,
+            filePath: ent.filePath,
+            line: ent.line,
+            moduleId: ent.ownerModule ? (moduleRowIds.get(ent.ownerModule) ?? null) : null,
+            columnsJson: JSON.stringify(ent.columns),
+          },
+        });
+        entityRowIds.set(ent.className, row.id);
+        tableCount++;
+      }
+
+      // FK edges (entity → entity), one edge per pair with the relation props
+      const fkPairs = new Map<string, string[]>();
+      for (const ent of entities) {
+        const sourceId = entityRowIds.get(ent.className);
+        for (const rel of ent.relations) {
+          const targetId = entityRowIds.get(rel.target);
+          if (!sourceId || !targetId || sourceId === targetId) continue;
+          const key = `${sourceId}->${targetId}`;
+          const props = fkPairs.get(key) ?? [];
+          props.push(rel.property);
+          fkPairs.set(key, props);
+        }
+      }
+      for (const [key, properties] of fkPairs) {
+        const [sourceId, targetId] = key.split('->');
+        await this.prisma.graphEdge.create({
+          data: {
+            snapshotId,
+            sourceId,
+            targetId,
+            type: 'fk',
+            metaJson: JSON.stringify({ properties }),
+          },
+        });
+        edgeCount++;
+      }
+
+      // touches-table edges (module → entity), aggregated with via + evidence
+      const rawTouches = 'tableTouches' in extraction ? extraction.tableTouches : [];
+      const touchAgg = new Map<string, { via: Set<string>; files: Set<string> }>();
+      for (const t of rawTouches) {
+        const moduleId = moduleRowIds.get(t.module);
+        const entityId = entityRowIds.get(t.entity);
+        if (!moduleId || !entityId) continue;
+        const key = `${moduleId}->${entityId}`;
+        let agg = touchAgg.get(key);
+        if (!agg) touchAgg.set(key, (agg = { via: new Set(), files: new Set() }));
+        agg.via.add(t.via);
+        if (agg.files.size < 10) {
+          agg.files.add(path.relative(rootPath, t.file).replace(/\\/g, '/'));
+        }
+      }
+      for (const [key, agg] of touchAgg) {
+        const [sourceId, targetId] = key.split('->');
+        await this.prisma.graphEdge.create({
+          data: {
+            snapshotId,
+            sourceId,
+            targetId,
+            type: 'touches-table',
+            metaJson: JSON.stringify({ via: [...agg.via], files: [...agg.files] }),
+          },
+        });
+        edgeCount++;
+      }
     }
 
     // Cross-layer linking: frontend call sites → backend endpoints
@@ -233,6 +309,7 @@ export class ScannerService {
       endpoints: endpointCount,
       frontendCalls: frontendCallCount,
       edges: edgeCount,
+      tables: tableCount,
       durationMs: Date.now() - started,
     };
 
