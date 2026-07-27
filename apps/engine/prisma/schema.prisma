@@ -29,6 +29,7 @@ model Project {
   executions         Execution[]
   collections        Collection[]
   scenarios          Scenario[]
+  deployTargets      DeployTarget[]
 }
 
 model Snapshot {
@@ -208,6 +209,77 @@ model ScenarioStep {
   extractionsJson String       @default("[]") // [{ name, pathExpr }] response → runtime vars
 
   @@index([scenarioId])
+}
+
+// ── Deployment side (persistent, user-owned) ────────────────────────────────
+
+// A remote box reachable over SSH. Reusable across projects. The PEM key (and
+// optional passphrase) is sealed with AES-256-GCM (see deploy/secret-box.ts) —
+// it is NEVER serialized to the API or logged.
+model Server {
+  id                String         @id @default(cuid())
+  name              String
+  host              String
+  port              Int            @default(22)
+  username          String
+  encryptedAuthJson String // sealed { privateKey, passphrase? }
+  createdAt         DateTime       @default(now())
+  targets           DeployTarget[]
+}
+
+// A named deploy destination for a project (e.g. "staging", "production"):
+// server + remote working dir + pipeline config.
+model DeployTarget {
+  id            String       @id @default(cuid())
+  projectId     String
+  project       Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  serverId      String
+  server        Server       @relation(fields: [serverId], references: [id], onDelete: Restrict)
+  name          String
+  workingDir    String // remote dir steps run in
+  preflightJson String       @default("[]") // remote commands that must exit 0 BEFORE upload/steps
+  uploadJson    String? // { localDir, excludeDirs[], excludeFiles[], remoteZipPath } — null = no upload phase
+  branch        String? // when set, package zips this branch fetched from the git remote, not localDir
+  stepsJson     String       @default("[]") // [{ name?, command, confirmBefore?, confirmOnFailure?, enabled? }]
+  localPreJson  String       @default("[]") // local commands run on THIS machine before packaging
+  localPostJson String       @default("[]") // local commands run on THIS machine after the health check
+  scriptPath    String? // deploy script this target was imported from (for re-sync)
+  healthUrl     String?
+  dbConfigJson  String? // sealed DB connection override (see dbschema/) — null = auto-discover from .env
+  createdAt     DateTime     @default(now())
+  deployments   Deployment[]
+  dbSchemaCache DbSchemaCache?
+
+  @@index([projectId])
+}
+
+// Cached result of the last live DB introspection for a target. Schema names
+// are not secret, so this is stored plaintext (the connection is not).
+model DbSchemaCache {
+  id         String       @id @default(cuid())
+  targetId   String       @unique
+  target     DeployTarget @relation(fields: [targetId], references: [id], onDelete: Cascade)
+  engine     String
+  database   String
+  schemaJson String
+  fetchedAt  DateTime     @default(now())
+}
+
+model Deployment {
+  id         String       @id @default(cuid())
+  targetId   String
+  target     DeployTarget @relation(fields: [targetId], references: [id], onDelete: Cascade)
+  projectId  String // denormalized for per-project history queries
+  status     String       @default("running") // running | succeeded | failed | cancelled
+  stepsJson  String       @default("[]") // [{ phase, name, command?, status, exitCode?, durationMs? }]
+  log        String       @default("") // combined output, capped at 2 MB
+  truncated  Boolean      @default(false)
+  error      String?
+  startedAt  DateTime     @default(now())
+  finishedAt DateTime?
+
+  @@index([targetId, startedAt])
+  @@index([projectId, startedAt])
 }
 
 model GraphEdge {

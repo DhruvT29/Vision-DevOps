@@ -142,6 +142,21 @@ export class GithubSourceService {
     return { rootPath: dir, repoUrl: webUrl, cloneUrl: effectiveCloneUrl, branch, account: probe.account };
   }
 
+  /** `remote.origin.url` of a local working copy, or undefined when absent. */
+  async originUrl(localDir: string): Promise<string | undefined> {
+    try {
+      const { stdout, code } = await runCmd(
+        'git',
+        ['-C', localDir, 'config', '--get', 'remote.origin.url'],
+        { env: NON_INTERACTIVE_ENV, timeoutMs: CMD_TIMEOUT },
+      );
+      if (code !== 0) return undefined;
+      return stdout.trim() || undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   // ── URL parsing ───────────────────────────────────────────────────────────
 
   parseRepoUrl(input: string): { owner: string; repo: string; cloneUrl: string; webUrl: string } {

@@ -8,5 +8,6 @@ import { GithubSourceService } from './github-source.service';
   imports: [AnalysisModule],
   controllers: [ProjectsController],
   providers: [ProjectsService, GithubSourceService],
+  exports: [GithubSourceService],
 })
 export class ProjectsModule {}

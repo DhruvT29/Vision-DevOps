@@ -532,8 +532,304 @@ export interface GithubNoAccessError {
   triedAccounts: string[];
 }
 
+/** Remote branch list for an already-opened GitHub project. */
+export interface ProjectBranchesResult {
+  /** the branch the project is currently on */
+  current?: string;
+  defaultBranch?: string;
+  branches: string[];
+}
+
+// ── Deployment engine ───────────────────────────────────────────────────────
+
+/** A registered SSH server. Key material is NEVER present on this shape. */
+export interface ServerSummary {
+  id: string;
+  name: string;
+  host: string;
+  port: number;
+  username: string;
+  createdAt: string;
+  /** number of deploy targets referencing this server */
+  targetCount: number;
+}
+
+/**
+ * Create/update body for a server. The ONLY place PEM material appears in the
+ * contract — request-only, sealed at rest, never echoed back.
+ */
+export interface UpsertServerRequest {
+  name?: string;
+  host?: string;
+  port?: number;
+  username?: string;
+  /** PEM private key contents; on update, omit/blank = keep existing */
+  privateKey?: string;
+  /** passphrase for an encrypted PEM */
+  passphrase?: string;
+}
+
+export interface ServerTestResult {
+  ok: boolean;
+  latencyMs?: number;
+  error?: string;
+}
+
+/**
+ * One command in a target's pipeline. Locality is decided by the bucket it
+ * lives in: `steps` run on the server, `localPre`/`localPost` run on the
+ * machine hosting the engine. All fields beyond name/command are optional so
+ * existing persisted steps keep working unchanged.
+ */
+export interface DeployStep {
+  name?: string;
+  command: string;
+  /** ask before running; declining SKIPS this step and the run continues */
+  confirmBefore?: string;
+  /** on a non-zero exit, ask whether to continue; declining ABORTS the run */
+  confirmOnFailure?: string;
+  /** false = imported but switched off; skipped without running */
+  enabled?: boolean;
+}
+
+/** Package-and-upload phase config; absent = pipeline is remote steps only. */
+export interface DeployUploadConfig {
+  /** local dir to zip; defaults to the project rootPath */
+  localDir: string;
+  /** dir names excluded anywhere in the tree, e.g. node_modules */
+  excludeDirs: string[];
+  /** file names excluded anywhere in the tree, e.g. .env */
+  excludeFiles: string[];
+  /** absolute remote path the zip is uploaded to */
+  remoteZipPath: string;
+}
+
+export interface DeployTargetSummary {
+  id: string;
+  projectId: string;
+  name: string;
+  serverId: string;
+  serverName: string;
+  host: string;
+  username: string;
+  workingDir: string;
+  preflight: string[];
+  upload?: DeployUploadConfig;
+  /** when set, the package phase zips this branch fetched fresh from the git
+   *  remote instead of upload.localDir */
+  branch?: string;
+  steps: DeployStep[];
+  /** local commands run on this machine BEFORE packaging (e.g. a branch guard) */
+  localPre: DeployStep[];
+  /** local commands run on this machine AFTER the health check (e.g. git promotion) */
+  localPost: DeployStep[];
+  healthUrl?: string;
+  /** source deploy script this target was imported from, for re-sync */
+  scriptPath?: string;
+  createdAt: string;
+  lastDeployment?: {
+    id: string;
+    status: DeploymentStatus;
+    startedAt: string;
+  };
+}
+
+export interface UpsertDeployTargetRequest {
+  name?: string;
+  serverId?: string;
+  workingDir?: string;
+  preflight?: string[];
+  upload?: DeployUploadConfig | null;
+  /** null clears the branch pin (deploys go back to zipping localDir) */
+  branch?: string | null;
+  steps?: DeployStep[];
+  localPre?: DeployStep[];
+  localPost?: DeployStep[];
+  healthUrl?: string | null;
+  /** null clears the imported-script link */
+  scriptPath?: string | null;
+}
+
+export type DeploymentStatus = 'running' | 'succeeded' | 'failed' | 'cancelled';
+export type DeployStepStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'skipped';
+/** Which pipeline phase a step row belongs to. */
+export type DeployPhase =
+  | 'connect'
+  | 'local-pre'
+  | 'preflight'
+  | 'package'
+  | 'upload'
+  | 'step'
+  | 'health'
+  | 'local-post';
+
+export interface DeploymentStepResult {
+  phase: DeployPhase;
+  name: string;
+  /** the exact remote command, for phases that run one */
+  command?: string;
+  status: DeployStepStatus;
+  exitCode?: number;
+  durationMs?: number;
+}
+
+export interface DeploymentSummary {
+  id: string;
+  targetId: string;
+  targetName: string;
+  projectId: string;
+  status: DeploymentStatus;
+  startedAt: string;
+  finishedAt?: string;
+  durationMs?: number;
+  error?: string;
+}
+
+export interface DeploymentDetail extends DeploymentSummary {
+  steps: DeploymentStepResult[];
+  log: string;
+  truncated: boolean;
+}
+
+/** SSE events emitted on /deployments/:id/stream. */
+export type DeployEvent =
+  | { type: 'log'; stepIndex: number; chunk: string }
+  | {
+      type: 'step';
+      stepIndex: number;
+      status: DeployStepStatus;
+      exitCode?: number;
+      durationMs?: number;
+    }
+  | { type: 'progress'; stepIndex: number; sentBytes: number; totalBytes: number }
+  /** the run is PAUSED awaiting an answer via POST /deployments/:id/respond */
+  | { type: 'prompt'; stepIndex: number; message: string; defaultYes: boolean }
+  | { type: 'prompt-resolved'; stepIndex: number; answer: boolean }
+  | { type: 'done'; status: DeploymentStatus; error?: string };
+
+export interface StartDeployResult {
+  deploymentId: string;
+}
+
+/** Answer to a pending `prompt` event. */
+export interface RespondDeployRequest {
+  stepIndex: number;
+  answer: boolean;
+}
+
+/**
+ * Result of statically parsing a PowerShell deploy script. The script is NEVER
+ * executed and any PEM path it references is ignored.
+ */
+export interface ParsedDeployScript {
+  workingDir?: string;
+  preflight: string[];
+  upload?: DeployUploadConfig;
+  /** remote steps, split from the script's embedded bash block */
+  steps: DeployStep[];
+  localPre: DeployStep[];
+  localPost: DeployStep[];
+  healthUrl?: string;
+  /** values read from the script — used to preselect a server, never to auth */
+  detected: {
+    host?: string;
+    username?: string;
+    projectRoot?: string;
+    expectedBranch?: string;
+  };
+  /** recognized-but-not-imported and unparsed constructs, surfaced to the user */
+  warnings: string[];
+}
+
+export interface ParseScriptRequest {
+  /** absolute path to a .ps1 on this machine */
+  path?: string;
+  /** raw script contents (used when the file is uploaded from the browser) */
+  content?: string;
+  fileName?: string;
+}
+
 export interface HealthResponse {
   ok: boolean;
   service: 'vision-engine';
   version: string;
+}
+
+// ── Database schema (live introspection over a deploy target's SSH) ──────────
+
+export type DbEngine = 'postgres' | 'mysql';
+
+export interface DbColumn {
+  name: string;
+  /** rendered type, e.g. "varchar(255)", "integer", "timestamptz" */
+  dataType: string;
+  nullable: boolean;
+  default?: string;
+  isPrimaryKey: boolean;
+}
+
+export interface DbForeignKey {
+  column: string;
+  refTable: string;
+  refColumn: string;
+}
+
+export interface DbIndex {
+  name: string;
+  columns: string[];
+  unique: boolean;
+  primary: boolean;
+}
+
+export interface DbTable {
+  schema: string; // e.g. "public"
+  name: string;
+  columns: DbColumn[];
+  /** ordered primary-key column names */
+  primaryKey: string[];
+  foreignKeys: DbForeignKey[];
+  indexes: DbIndex[];
+}
+
+/** The live schema pulled from a target's database. */
+export interface DbSchemaResult {
+  engine: DbEngine;
+  database: string;
+  /** how the connection was resolved */
+  source: 'env' | 'override' | 'mixed';
+  fetchedAt: string;
+  tables: DbTable[];
+  /** non-fatal notes, e.g. an index query that failed */
+  warnings?: string[];
+}
+
+/**
+ * Per-target connection override. The ONLY place a DB password appears in the
+ * contract — request-only, sealed at rest, never echoed back. Any field left
+ * blank falls back to auto-discovery from the app's .env.
+ */
+export interface DbConnectionConfig {
+  engine?: DbEngine;
+  /** full connection URI; overrides the discrete fields when set */
+  connectionUrl?: string;
+  host?: string;
+  port?: number;
+  database?: string;
+  user?: string;
+  /** request-only; never returned by the API */
+  password?: string;
+  /** path to the .env to read for auto-discovery (default <workingDir>/.env) */
+  envPath?: string;
+}
+
+/** Non-secret view of a target's saved DB override. */
+export interface DbConnectionInfo {
+  configured: boolean;
+  engine?: DbEngine;
+  host?: string;
+  port?: number;
+  database?: string;
+  user?: string;
+  hasPassword: boolean;
+  envPath?: string;
 }

@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import type { SnapshotStats } from '@vision/shared';
+import { BranchSwitcher } from './BranchSwitcher';
 
 /**
  * Chrome for all in-project pages: top navbar (centered wordmark + snapshot
@@ -21,6 +22,7 @@ export function AppShell({
   return (
     <div className="flex h-screen flex-col">
       <header className="relative flex h-12 shrink-0 items-center border-b border-zinc-800 px-4">
+        <BranchSwitcher snapshotId={snapshotId} />
         <Link
           href="/"
           className="absolute left-1/2 -translate-x-1/2 pl-[1.5em] text-sm font-bold tracking-[1.5em] text-zinc-100 transition hover:text-white"
@@ -66,6 +68,8 @@ function NavSidebar({ snapshotId }: { snapshotId: string }) {
     { href: `/dependencies/${snapshotId}`, label: 'Dependency Graph', icon: <DependencyIcon /> },
     { href: `/db-blast/${snapshotId}`, label: 'DB Blast Analysis', icon: <DatabaseIcon /> },
     { href: `/insights/${snapshotId}`, label: 'Insights', icon: <InsightsIcon /> },
+    { href: `/deploy/${snapshotId}`, label: 'Deployment', icon: <RocketIcon /> },
+    { href: `/db-schema/${snapshotId}`, label: 'Database Schema', icon: <SchemaIcon /> },
   ];
 
   return (
@@ -158,6 +162,25 @@ function InsightsIcon() {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4">
       <path d="M3 12h4l3-8 4 16 3-8h4" />
+    </svg>
+  );
+}
+
+function SchemaIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4">
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M3 9h18M9 9v11M3 14h18" />
+    </svg>
+  );
+}
+
+function RocketIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4">
+      <path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z" />
+      <path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z" />
+      <path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5" />
     </svg>
   );
 }

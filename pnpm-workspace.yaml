@@ -4,5 +4,9 @@ packages:
 allowBuilds:
   '@prisma/client': true
   '@prisma/engines': true
+  # ssh2's native bindings (cpu-features) are optional perf-only extras and
+  # need VS build tools on Windows — the pure-JS fallback is what we use.
+  cpu-features: false
   prisma: true
   sharp: true
+  ssh2: false

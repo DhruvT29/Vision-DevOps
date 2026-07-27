@@ -2,6 +2,7 @@ import { Body, Controller, Delete, Get, NotFoundException, Param, Post } from '@
 import type {
   GithubPreflightResult,
   OpenProjectResponse,
+  ProjectBranchesResult,
   ProjectSummary,
   SnapshotSummary,
 } from '@vision/shared';
@@ -41,6 +42,11 @@ export class ProjectsController {
   @Delete(':id')
   remove(@Param('id') id: string): Promise<{ ok: true }> {
     return this.svc.remove(id);
+  }
+
+  @Get(':id/branches')
+  branches(@Param('id') id: string): Promise<ProjectBranchesResult> {
+    return this.svc.branches(id);
   }
 
   @Get(':id/latest-snapshot')

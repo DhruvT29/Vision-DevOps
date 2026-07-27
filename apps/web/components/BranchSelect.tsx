@@ -8,11 +8,20 @@ export function BranchSelect({
   value,
   defaultBranch,
   onChange,
+  emptyOption,
+  placeholder,
+  triggerClassName,
 }: {
   branches: string[];
   value: string;
   defaultBranch?: string;
   onChange: (branch: string) => void;
+  /** when set, a top item with this label clears the selection to '' */
+  emptyOption?: string;
+  /** dim label shown on the trigger while value is '' */
+  placeholder?: string;
+  /** overrides the trigger button styling (e.g. to match a form's inputs) */
+  triggerClassName?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState('');
@@ -49,9 +58,16 @@ export function BranchSelect({
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        className="flex w-full items-center justify-between gap-2 rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm outline-none transition hover:border-zinc-700 focus:border-zinc-600"
+        className={`flex w-full items-center justify-between gap-2 ${
+          triggerClassName ??
+          'rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm outline-none transition hover:border-zinc-700 focus:border-zinc-600'
+        }`}
       >
-        <span className="truncate font-mono text-zinc-200">{value}</span>
+        {value ? (
+          <span className="truncate font-mono text-zinc-200">{value}</span>
+        ) : (
+          <span className="truncate font-mono text-zinc-600">{placeholder ?? 'select branch'}</span>
+        )}
         <span className="flex shrink-0 items-center gap-2">
           {value === defaultBranch && (
             <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-400">
@@ -85,6 +101,35 @@ export function BranchSelect({
             />
           </div>
           <ul className="max-h-56 overflow-y-auto py-1">
+            {emptyOption && filter === '' && (
+              <li className="border-b border-zinc-800/60">
+                <button
+                  type="button"
+                  onClick={() => {
+                    onChange('');
+                    setOpen(false);
+                  }}
+                  className={`flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-xs italic transition ${
+                    value === ''
+                      ? 'bg-zinc-800 text-zinc-200'
+                      : 'text-zinc-500 hover:bg-zinc-800/60 hover:text-zinc-300'
+                  }`}
+                >
+                  <span className="truncate">{emptyOption}</span>
+                  {value === '' && (
+                    <svg
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2.5"
+                      className="h-3.5 w-3.5 shrink-0 text-emerald-400"
+                    >
+                      <path d="m5 13 4 4L19 7" />
+                    </svg>
+                  )}
+                </button>
+              </li>
+            )}
             {visible.length === 0 && (
               <li className="px-3 py-2 text-xs text-zinc-500">No branches match</li>
             )}
