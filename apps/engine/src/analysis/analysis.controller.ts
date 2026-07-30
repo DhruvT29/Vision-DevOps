@@ -2,7 +2,10 @@ import { Body, Controller, Get, NotFoundException, Param, Post } from '@nestjs/c
 import * as path from 'path';
 import type {
   DbDiffResult,
+  DbEntityNode,
+  DbSchemaResult,
   DiffImpactResult,
+  GraphEdge,
   GraphPayload,
   InsightsPayload,
   SnapshotSummary,
@@ -74,6 +77,31 @@ export class AnalysisController {
     // github projects link source lines back to github.com
     const project = await this.prisma.project.findUnique({ where: { id: snap.projectId } });
 
+    const edges: GraphEdge[] = snap.edges.map((e) => ({
+      id: e.id,
+      snapshotId: e.snapshotId,
+      sourceId: e.sourceId,
+      targetId: e.targetId,
+      type: e.type as never,
+      confidence: e.confidence,
+      manual: e.manual,
+      meta: e.metaJson ? JSON.parse(e.metaJson) : undefined,
+    }));
+    const entities: DbEntityNode[] = snap.entities.map((e) => ({
+      id: e.id,
+      snapshotId: e.snapshotId,
+      name: e.name,
+      tableName: e.tableName,
+      filePath: e.filePath,
+      line: e.line,
+      moduleId: e.moduleId,
+      columns: JSON.parse(e.columnsJson),
+      sourceUrl: project ? blobUrl(project, e.filePath, e.line) : undefined,
+    }));
+
+    // overlay the real DB's foreign keys when a schema has been fetched
+    await this.mergeRealDbForeignKeys(snap.projectId, entities, edges);
+
     return {
       snapshot: this.toSummary(snap),
       modules: snap.modules.map((m) => ({
@@ -114,28 +142,97 @@ export class AnalysisController {
         line: c.line,
         sourceUrl: project ? blobUrl(project, c.filePath, c.line) : undefined,
       })),
-      edges: snap.edges.map((e) => ({
-        id: e.id,
-        snapshotId: e.snapshotId,
-        sourceId: e.sourceId,
-        targetId: e.targetId,
-        type: e.type as never,
-        confidence: e.confidence,
-        manual: e.manual,
-        meta: e.metaJson ? JSON.parse(e.metaJson) : undefined,
-      })),
-      entities: snap.entities.map((e) => ({
-        id: e.id,
-        snapshotId: e.snapshotId,
-        name: e.name,
-        tableName: e.tableName,
-        filePath: e.filePath,
-        line: e.line,
-        moduleId: e.moduleId,
-        columns: JSON.parse(e.columnsJson),
-        sourceUrl: project ? blobUrl(project, e.filePath, e.line) : undefined,
-      })),
+      edges,
+      entities,
     };
+  }
+
+  /**
+   * Overlay the real database's foreign keys onto the code-derived graph. If any
+   * of the project's deploy targets has a fetched schema cached, its FK
+   * constraints are authoritative: they light up FK columns, stamp real primary
+   * keys, and add `origin:'db'` edges for relations the source code never
+   * declared. A no-op when no schema has been fetched. Read-only — never a rescan.
+   */
+  private async mergeRealDbForeignKeys(
+    projectId: string,
+    entities: DbEntityNode[],
+    edges: GraphEdge[],
+  ): Promise<void> {
+    const cache = await this.prisma.dbSchemaCache.findFirst({
+      where: { target: { projectId } },
+      orderBy: { fetchedAt: 'desc' },
+    });
+    if (!cache) return;
+
+    let schema: DbSchemaResult;
+    try {
+      schema = JSON.parse(cache.schemaJson);
+    } catch {
+      return;
+    }
+
+    // normalized table name → entity (lowercased/stripped, plus de-pluralized)
+    const variants = (s: string): string[] => {
+      const base = s.toLowerCase().replace(/[^a-z0-9]/g, '');
+      if (!base) return [];
+      const out = new Set([base]);
+      if (/ies$/.test(base)) out.add(base.slice(0, -3) + 'y');
+      else if (/(ses|xes|zes|ches|shes)$/.test(base)) out.add(base.slice(0, -2));
+      else if (/s$/.test(base) && !/ss$/.test(base)) out.add(base.slice(0, -1));
+      return [...out];
+    };
+    const index = new Map<string, DbEntityNode>();
+    for (const ent of entities) {
+      for (const key of [...variants(ent.tableName), ...variants(ent.name)]) {
+        if (!index.has(key)) index.set(key, ent);
+      }
+    }
+    const resolve = (table: string): DbEntityNode | undefined => {
+      for (const key of variants(table)) {
+        const ent = index.get(key);
+        if (ent) return ent;
+      }
+      return undefined;
+    };
+    const markColumn = (ent: DbEntityNode, colName: string, patch: Partial<DbEntityNode['columns'][number]>) => {
+      const lc = colName.toLowerCase();
+      const col =
+        ent.columns.find((c) => c.name === colName) ??
+        ent.columns.find((c) => c.name.toLowerCase() === lc);
+      if (col) Object.assign(col, patch);
+    };
+
+    const existing = new Set(
+      edges.filter((e) => e.type === 'fk').map((e) => `${e.sourceId}->${e.targetId}`),
+    );
+    let synthetic = 0;
+    for (const table of schema.tables) {
+      const src = resolve(table.name);
+      if (!src) continue;
+      for (const pk of table.primaryKey ?? []) markColumn(src, pk, { isPrimaryKey: true });
+      for (const fk of table.foreignKeys ?? []) {
+        const tgt = resolve(fk.refTable);
+        markColumn(src, fk.column, {
+          isForeignKey: true,
+          refTable: tgt?.tableName ?? fk.refTable,
+        });
+        if (!tgt || tgt.id === src.id) continue;
+        const key = `${src.id}->${tgt.id}`;
+        if (existing.has(key)) continue;
+        existing.add(key);
+        edges.push({
+          id: `db-fk:${key}:${synthetic++}`,
+          snapshotId: src.snapshotId,
+          sourceId: src.id,
+          targetId: tgt.id,
+          type: 'fk',
+          confidence: 1,
+          manual: false,
+          meta: { properties: [fk.column], origin: 'db' },
+        });
+      }
+    }
   }
 
   private toSummary(snap: {

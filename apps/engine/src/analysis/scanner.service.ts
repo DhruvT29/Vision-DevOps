@@ -232,28 +232,37 @@ export class ScannerService {
         tableCount++;
       }
 
-      // FK edges (entity → entity), one edge per pair with the relation props
-      const fkPairs = new Map<string, string[]>();
+      // FK edges (entity → entity), one edge per pair aggregating the relation
+      // props. A pair is `inferred` only when EVERY contributing relation is a
+      // heuristic guess — a declared relation always wins.
+      const fkPairs = new Map<string, { properties: string[]; inferred: boolean }>();
       for (const ent of entities) {
         const sourceId = entityRowIds.get(ent.className);
         for (const rel of ent.relations) {
-          const targetId = entityRowIds.get(rel.target);
+          const targetId = entityRowIds.get(rel.resolvedTarget ?? rel.target);
           if (!sourceId || !targetId || sourceId === targetId) continue;
           const key = `${sourceId}->${targetId}`;
-          const props = fkPairs.get(key) ?? [];
-          props.push(rel.property);
-          fkPairs.set(key, props);
+          const agg = fkPairs.get(key) ?? { properties: [], inferred: true };
+          agg.properties.push(rel.property);
+          if (!rel.inferred) agg.inferred = false;
+          fkPairs.set(key, agg);
         }
       }
-      for (const [key, properties] of fkPairs) {
+      for (const [key, agg] of fkPairs) {
         const [sourceId, targetId] = key.split('->');
+        const meta = {
+          properties: agg.properties,
+          origin: 'typeorm' as const,
+          ...(agg.inferred ? { inferred: true } : {}),
+        };
         await this.prisma.graphEdge.create({
           data: {
             snapshotId,
             sourceId,
             targetId,
             type: 'fk',
-            metaJson: JSON.stringify({ properties }),
+            confidence: agg.inferred ? 0.6 : 1,
+            metaJson: JSON.stringify(meta),
           },
         });
         edgeCount++;

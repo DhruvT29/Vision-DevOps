@@ -22,6 +22,7 @@ import type {
   DbDiffResult,
   DbEntityNode,
   EnvironmentSummary,
+  FkMeta,
   GraphPayload,
   ModuleNode as ModuleNodeData,
   ScanStatus,
@@ -43,7 +44,22 @@ import {
 
 const FK_COLOR = '#10b981'; // emerald — foreign-key relation
 const TWO_WAY = '#f59e0b'; // amber — tables referencing each other
+const DB_COLOR = '#22d3ee'; // cyan — from the live database's FK constraints
 const HUE_COLOR = { rose: '#f43f5e', emerald: '#10b981' } as const;
+
+// Node sizing — compact card vs expanded schema (column-list) card. The layout
+// and the floating edges both read these, so they stay in sync with the DOM.
+const COMPACT_SIZE = { w: 240, h: 64 };
+const EXPANDED_W = 300;
+const EXPANDED_HEADER_H = 52;
+const EXPANDED_ROW_H = 24;
+const EXPANDED_PAD = 10;
+
+function tableNodeSize(entity: DbEntityNode, expanded: boolean): { w: number; h: number } {
+  if (!expanded) return COMPACT_SIZE;
+  const rows = Math.max(entity.columns.length, 1);
+  return { w: EXPANDED_W, h: EXPANDED_HEADER_H + rows * EXPANDED_ROW_H + EXPANDED_PAD };
+}
 
 type Direction = 'upstream' | 'downstream';
 type ImpactTier = 'direct' | 'indirect' | 'global';
@@ -64,48 +80,135 @@ type TableFlowNode = Node<
     ownerName?: string;
     selected: boolean;
     dimmed: boolean;
+    expanded: boolean;
     impact?: ImpactTier;
     hue: Hue;
   },
   'table'
 >;
 
+function DbGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-3 w-3 shrink-0 text-emerald-500/80">
+      <ellipse cx="12" cy="5" rx="8" ry="3" />
+      <path d="M4 5v14c0 1.66 3.58 3 8 3s8-1.34 8-3V5" />
+      <path d="M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3" />
+    </svg>
+  );
+}
+
+/** small key glyph marking a foreign-key column on the expanded card */
+function FkGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-2.5 w-2.5 shrink-0 text-amber-400/90" aria-hidden>
+      <circle cx="8" cy="8" r="4" />
+      <path d="m11 11 6 6M15 15l2-2M17 17l2-2" />
+    </svg>
+  );
+}
+
 function TableGraphNode({ data }: NodeProps<TableFlowNode>) {
-  const { entity, ownerName, selected, dimmed, impact, hue } = data;
+  const { entity, ownerName, selected, dimmed, expanded, impact, hue } = data;
   const border = selected
     ? 'border-sky-500/70 bg-sky-950/50 shadow-lg shadow-sky-500/15'
     : impact
       ? IMPACT_NODE_STYLE[hue][impact]
       : 'border-emerald-500/25 bg-[rgba(16,60,45,0.12)] hover:border-emerald-400/60 hover:shadow-[0_0_40px_-6px_rgba(16,185,129,0.5)]';
+
+  const handles = (
+    <>
+      <Handle type="target" position={Position.Left} className="!opacity-0" />
+      <Handle type="source" position={Position.Right} className="!opacity-0" />
+    </>
+  );
+
+  if (!expanded) {
+    return (
+      <div
+        style={{ width: COMPACT_SIZE.w, height: COMPACT_SIZE.h }}
+        className={`flex cursor-pointer items-center justify-between rounded-xl border px-4 backdrop-blur-xl transition ${border} ${
+          dimmed ? 'opacity-20' : ''
+        }`}
+      >
+        <div className="min-w-0">
+          <div className="flex items-center gap-1.5">
+            <DbGlyph />
+            <span className="truncate font-mono text-sm font-semibold text-zinc-100">
+              {entity.tableName}
+            </span>
+          </div>
+          <div className="truncate text-[10px] uppercase tracking-wider text-emerald-500/80">
+            table{ownerName ? ` · ${ownerName.replace(/Module$/, '')}` : ''}
+          </div>
+        </div>
+        <span
+          className="ml-2 rounded-full bg-zinc-800 px-2 py-0.5 text-xs font-medium text-zinc-300"
+          title={`${entity.columns.length} columns`}
+        >
+          {entity.columns.length}
+        </span>
+        {handles}
+      </div>
+    );
+  }
+
   return (
     <div
-      className={`flex h-16 w-60 cursor-pointer items-center justify-between rounded-xl border px-4 backdrop-blur-xl transition ${border} ${
+      style={{ width: EXPANDED_W }}
+      className={`flex cursor-pointer flex-col overflow-hidden rounded-xl border backdrop-blur-xl transition ${border} ${
         dimmed ? 'opacity-20' : ''
       }`}
     >
-      <div className="min-w-0">
-        <div className="flex items-center gap-1.5">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-3 w-3 shrink-0 text-emerald-500/80">
-            <ellipse cx="12" cy="5" rx="8" ry="3" />
-            <path d="M4 5v14c0 1.66 3.58 3 8 3s8-1.34 8-3V5" />
-            <path d="M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3" />
-          </svg>
+      <div className="flex items-center justify-between gap-2 border-b border-white/5 px-3 py-2">
+        <div className="flex min-w-0 items-center gap-1.5">
+          <DbGlyph />
           <span className="truncate font-mono text-sm font-semibold text-zinc-100">
             {entity.tableName}
           </span>
         </div>
-        <div className="truncate text-[10px] uppercase tracking-wider text-emerald-500/80">
-          table{ownerName ? ` · ${ownerName.replace(/Module$/, '')}` : ''}
-        </div>
+        {ownerName && (
+          <span className="shrink-0 truncate text-[9px] uppercase tracking-wider text-emerald-500/80">
+            {ownerName.replace(/Module$/, '')}
+          </span>
+        )}
       </div>
-      <span
-        className="ml-2 rounded-full bg-zinc-800 px-2 py-0.5 text-xs font-medium text-zinc-300"
-        title={`${entity.columns.length} columns`}
-      >
-        {entity.columns.length}
-      </span>
-      <Handle type="target" position={Position.Left} className="!opacity-0" />
-      <Handle type="source" position={Position.Right} className="!opacity-0" />
+      <div className="flex flex-col py-1">
+        {entity.columns.length === 0 && (
+          <div className="px-3 py-1 text-[10px] text-zinc-600">no columns detected</div>
+        )}
+        {entity.columns.map((c) => (
+          <div
+            key={c.name}
+            style={{ height: EXPANDED_ROW_H }}
+            className="flex items-center justify-between gap-2 px-3"
+            title={c.refTable ? `${c.name} → ${c.refTable}` : c.name}
+          >
+            <span className="flex min-w-0 items-center gap-1">
+              {c.isForeignKey && <FkGlyph />}
+              <span
+                className={`truncate font-mono text-[11px] ${
+                  c.isPrimaryKey ? 'font-semibold text-amber-200' : 'text-zinc-300'
+                }`}
+              >
+                {c.name}
+              </span>
+            </span>
+            <span className="flex shrink-0 items-center gap-1.5">
+              {c.type && (
+                <span className="max-w-[110px] truncate font-mono text-[10px] text-zinc-600">
+                  {c.type}
+                </span>
+              )}
+              {c.isPrimaryKey && (
+                <span className="rounded bg-amber-950/70 px-1 py-px text-[8px] font-bold tracking-wide text-amber-300" title="Primary key">
+                  PK
+                </span>
+              )}
+            </span>
+          </div>
+        ))}
+      </div>
+      {handles}
     </div>
   );
 }
@@ -194,6 +297,7 @@ export function DbBlastView({ snapshotId }: { snapshotId: string }) {
   const [scanError, setScanError] = useState<string | null>(null);
   const [graph, setGraph] = useState<GraphPayload | null>(null);
   const [search, setSearch] = useState('');
+  const [expanded, setExpanded] = useState(false);
   const [selectedTableIds, setSelectedTableIds] = useState<string[]>([]);
   const [direction, setDirection] = useState<Direction>('upstream');
   const [migration, setMigration] = useState<DbDiffResult | null>(null);
@@ -204,6 +308,14 @@ export function DbBlastView({ snapshotId }: { snapshotId: string }) {
     setSelectedTableIds([]);
     setMigration(null);
   }, []);
+
+  // remember the expand toggle across sessions
+  useEffect(() => {
+    setExpanded(localStorage.getItem('vision:db-blast-expanded') === '1');
+  }, []);
+  useEffect(() => {
+    localStorage.setItem('vision:db-blast-expanded', expanded ? '1' : '0');
+  }, [expanded]);
 
   const rescan = useCallback(async () => {
     if (!graph || rescanning) return;
@@ -262,6 +374,16 @@ export function DbBlastView({ snapshotId }: { snapshotId: string }) {
     [graph],
   );
   const fkEdges = useMemo(() => graph?.edges.filter((e) => e.type === 'fk') ?? [], [graph]);
+  const fkCounts = useMemo(() => {
+    let inferred = 0;
+    let fromDb = 0;
+    for (const e of fkEdges) {
+      const m = e.meta as FkMeta | undefined;
+      if (m?.inferred) inferred++;
+      if (m?.origin === 'db') fromDb++;
+    }
+    return { inferred, fromDb };
+  }, [fkEdges]);
   const touchEdges = useMemo(
     () => graph?.edges.filter((e) => e.type === 'touches-table') ?? [],
     [graph],
@@ -356,6 +478,7 @@ export function DbBlastView({ snapshotId }: { snapshotId: string }) {
     const selectedSet = new Set(selectedTableIds);
     const blastActive = !!impact;
 
+    const sizeById = new Map<string, { w: number; h: number }>();
     const nodes: Node[] = visibleTables.map((e) => {
       let tier: ImpactTier | undefined;
       let dimmed = false;
@@ -364,15 +487,22 @@ export function DbBlastView({ snapshotId }: { snapshotId: string }) {
         tier = d === 1 ? 'direct' : d ? 'indirect' : undefined;
         dimmed = !tier;
       }
+      const size = tableNodeSize(e, expanded);
+      sizeById.set(e.id, size);
       return {
         id: e.id,
         type: 'table' as const,
         position: { x: 0, y: 0 },
+        // explicit size keeps the force layout, the DOM, and the floating edges
+        // (which read node.measured) all in agreement for tall expanded cards
+        width: size.w,
+        height: size.h,
         data: {
           entity: e,
           ownerName: e.moduleId ? moduleById.get(e.moduleId)?.name : undefined,
           selected: selectedSet.has(e.id),
           dimmed,
+          expanded,
           impact: tier,
           hue,
         },
@@ -382,10 +512,19 @@ export function DbBlastView({ snapshotId }: { snapshotId: string }) {
     const impactedIds = affectedTableIds;
     const edges: Edge[] = fkEdges.flatMap((e) => {
       if (!visibleIds.has(e.sourceId) || !visibleIds.has(e.targetId)) return [];
+      const meta = e.meta as FkMeta | undefined;
+      const fromDb = meta?.origin === 'db';
+      const inferred = meta?.inferred === true;
       const mutual = fkKeys.has(`${e.targetId}->${e.sourceId}`);
       const onPath = !!impactedIds && impactedIds.has(e.sourceId) && impactedIds.has(e.targetId);
       const dim = blastActive && !onPath;
-      const color = onPath ? HUE_COLOR[hue] : mutual ? TWO_WAY : FK_COLOR;
+      const color = onPath
+        ? HUE_COLOR[hue]
+        : fromDb
+          ? DB_COLOR
+          : mutual
+            ? TWO_WAY
+            : FK_COLOR;
       return [
         {
           id: e.id,
@@ -397,15 +536,17 @@ export function DbBlastView({ snapshotId }: { snapshotId: string }) {
           style: {
             stroke: color,
             strokeWidth: onPath ? 2 : 1.5,
-            opacity: dim ? 0.06 : 0.65,
+            // heuristic (inferred) FKs are drawn dashed and a touch fainter
+            strokeDasharray: inferred ? '5 4' : undefined,
+            opacity: dim ? 0.06 : inferred ? 0.5 : 0.65,
           },
           markerEnd: { type: MarkerType.ArrowClosed, color, width: 16, height: 16 },
         },
       ];
     });
 
-    return { nodes: layoutDependencyGraph(nodes, edges), edges };
-  }, [graph, entities, fkEdges, fkKeys, moduleById, impact, affectedTableIds, hue, selectedTableIds, search]);
+    return { nodes: layoutDependencyGraph(nodes, edges, sizeById), edges };
+  }, [graph, entities, fkEdges, fkKeys, moduleById, impact, affectedTableIds, hue, selectedTableIds, search, expanded]);
 
   const onNodeClick: NodeMouseHandler = useCallback((_, node) => {
     setMigration(null);
@@ -478,15 +619,43 @@ export function DbBlastView({ snapshotId }: { snapshotId: string }) {
             }}
             onClear={clearSelection}
           />
-          <span className="hidden items-center gap-1.5 text-[11px] text-zinc-500 xl:flex" title="Foreign-key relation between two tables">
+          <button
+            onClick={() => setExpanded((v) => !v)}
+            title="Expand every table into its full column list (schema view)"
+            className={`flex shrink-0 items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs transition ${
+              expanded
+                ? 'border-emerald-500/50 bg-emerald-950/40 text-emerald-200'
+                : 'border-zinc-800 text-zinc-300 hover:border-zinc-600'
+            }`}
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-3.5 w-3.5">
+              {expanded ? (
+                <path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7" />
+              ) : (
+                <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
+              )}
+            </svg>
+            {expanded ? 'Collapse' : 'Expand schemas'}
+          </button>
+          <span className="hidden items-center gap-1.5 text-[11px] text-zinc-500 xl:flex" title="Foreign-key relation declared in code">
             <span className="inline-block h-0.5 w-5 rounded bg-emerald-500/80" />
             FK relation
+          </span>
+          <span className="hidden items-center gap-1.5 text-[11px] text-zinc-500 xl:flex" title="Heuristic guess — an implicit `xxxId` column with no declared relation">
+            <svg width="20" height="2" className="shrink-0">
+              <line x1="0" y1="1" x2="20" y2="1" stroke="#10b981" strokeWidth="2" strokeDasharray="4 3" opacity="0.8" />
+            </svg>
+            inferred
+          </span>
+          <span className="hidden items-center gap-1.5 text-[11px] text-zinc-500 xl:flex" title="Foreign key read from the live database's constraints (DB Schema section)">
+            <span className="inline-block h-0.5 w-5 rounded bg-cyan-400/80" />
+            live DB
           </span>
           <span className="hidden items-center gap-1.5 text-[11px] text-zinc-500 xl:flex" title="Two tables referencing each other">
             <span className="inline-block h-0.5 w-5 rounded bg-amber-500/80" />
             circular
           </span>
-          <span className="hidden items-center gap-1.5 text-[11px] text-zinc-500 xl:flex" title="On the blast path of the selected table">
+          <span className="hidden items-center gap-1.5 text-[11px] text-zinc-500 2xl:flex" title="On the blast path of the selected table">
             <span className="inline-block h-0.5 w-5 rounded bg-rose-500/80" />
             at risk
           </span>
@@ -505,6 +674,8 @@ export function DbBlastView({ snapshotId }: { snapshotId: string }) {
             </button>
             <span className="whitespace-nowrap text-xs text-zinc-500">
               {entities.length} tables · {fkEdges.length} relations
+              {fkCounts.inferred > 0 && ` · ${fkCounts.inferred} inferred`}
+              {fkCounts.fromDb > 0 && ` · ${fkCounts.fromDb} from DB`}
             </span>
           </span>
         </div>

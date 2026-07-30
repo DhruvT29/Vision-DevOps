@@ -19,8 +19,17 @@ const GRAVITY = 0.08; // pull toward the center — compacts the whole web
  * it instead of being flung to the periphery by unopposed repulsion.
  * Deterministic: same input always yields the same positions.
  */
-export function layoutDependencyGraph(nodes: Node[], edges: Edge[]): Node[] {
+/** Optional per-node dimensions (id → {w,h}); absent nodes fall back to the defaults. */
+type SizeMap = Map<string, { w: number; h: number }>;
+
+export function layoutDependencyGraph(
+  nodes: Node[],
+  edges: Edge[],
+  sizeById?: SizeMap,
+): Node[] {
   if (nodes.length === 0) return nodes;
+
+  const sizeOf = (n: Node) => sizeById?.get(n.id) ?? { w: NODE_W, h: NODE_H };
 
   const connectedIds = new Set<string>();
   for (const e of edges) {
@@ -30,21 +39,23 @@ export function layoutDependencyGraph(nodes: Node[], edges: Edge[]): Node[] {
   const connected = nodes.filter((n) => connectedIds.has(n.id));
   const isolated = nodes.filter((n) => !connectedIds.has(n.id));
 
-  const laid = simulate(connected, edges);
+  const laid = simulate(connected, edges, sizeOf);
 
   // bounding box of the web, to place the parked grid beside it
   let maxX = 0;
   let minY = 0;
   let maxY = 0;
   if (laid.length > 0) {
-    maxX = Math.max(...laid.map((n) => n.position.x + NODE_W));
+    maxX = Math.max(...laid.map((n) => n.position.x + sizeOf(n).w));
     minY = Math.min(...laid.map((n) => n.position.y));
-    maxY = Math.max(...laid.map((n) => n.position.y + NODE_H));
+    maxY = Math.max(...laid.map((n) => n.position.y + sizeOf(n).h));
   }
 
-  // compact, roughly 16:9 grid for edge-less nodes
-  const cellW = NODE_W + GAP_X;
-  const cellH = NODE_H + GAP_Y;
+  // compact, roughly 16:9 grid for edge-less nodes — cells sized to the largest
+  const maxIsoW = isolated.reduce((m, n) => Math.max(m, sizeOf(n).w), NODE_W);
+  const maxIsoH = isolated.reduce((m, n) => Math.max(m, sizeOf(n).h), NODE_H);
+  const cellW = maxIsoW + GAP_X;
+  const cellH = maxIsoH + GAP_Y;
   const cols = Math.max(1, Math.round(Math.sqrt((isolated.length * (16 / 9) * cellH) / cellW)));
   const rows = Math.ceil(isolated.length / cols);
   const gridHeight = rows * cellH - GAP_Y;
@@ -62,13 +73,20 @@ export function layoutDependencyGraph(nodes: Node[], edges: Edge[]): Node[] {
   return [...laid, ...gridded];
 }
 
-function simulate(nodes: Node[], edges: Edge[]): Node[] {
+function simulate(nodes: Node[], edges: Edge[], sizeOf: (n: Node) => { w: number; h: number }): Node[] {
   const n = nodes.length;
   if (n === 0) return [];
 
   const index = new Map(nodes.map((node, i) => [node.id, i]));
   const xs = new Float64Array(n);
   const ys = new Float64Array(n);
+  const ws = new Float64Array(n);
+  const hs = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    const s = sizeOf(nodes[i]);
+    ws[i] = s.w;
+    hs[i] = s.h;
+  }
 
   // deterministic seed: golden-angle spiral
   for (let i = 0; i < n; i++) {
@@ -149,13 +167,14 @@ function simulate(nodes: Node[], edges: Edge[]): Node[] {
   // stretch horizontally to account for the cards' landscape aspect
   for (let i = 0; i < n; i++) xs[i] *= STRETCH_X;
 
-  // separate any cards that still overlap (axis of least penetration)
-  for (let pass = 0; pass < 60; pass++) {
+  // separate any cards that still overlap (axis of least penetration), using
+  // each pair's own half-extents so tall expanded cards get real clearance
+  for (let pass = 0; pass < 80; pass++) {
     let moved = false;
     for (let i = 0; i < n; i++) {
       for (let j = i + 1; j < n; j++) {
-        const ox = NODE_W + GAP_X - Math.abs(xs[i] - xs[j]);
-        const oy = NODE_H + GAP_Y - Math.abs(ys[i] - ys[j]);
+        const ox = (ws[i] + ws[j]) / 2 + GAP_X - Math.abs(xs[i] - xs[j]);
+        const oy = (hs[i] + hs[j]) / 2 + GAP_Y - Math.abs(ys[i] - ys[j]);
         if (ox <= 0 || oy <= 0) continue;
         moved = true;
         if (ox < oy) {
@@ -176,6 +195,6 @@ function simulate(nodes: Node[], edges: Edge[]): Node[] {
 
   return nodes.map((node, i) => ({
     ...node,
-    position: { x: xs[i] - NODE_W / 2, y: ys[i] - NODE_H / 2 },
+    position: { x: xs[i] - ws[i] / 2, y: ys[i] - hs[i] / 2 },
   }));
 }

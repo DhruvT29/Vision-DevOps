@@ -159,9 +159,18 @@ export type EdgeType = 'contains' | 'calls' | 'imports' | 'file-imports' | 'fk' 
 export interface EntityColumn {
   name: string;
   type?: string;
+  /** part of the primary key (@PrimaryColumn/@PrimaryGeneratedColumn, or the real DB PK) */
+  isPrimaryKey?: boolean;
+  /** the column backing a foreign key (declared relation, inferred `xxxId`, or real DB FK) */
+  isForeignKey?: boolean;
+  /** best-known table this FK column references — shown on the expanded card */
+  refTable?: string;
 }
 
-/** TypeORM @Entity class — one database table. */
+/** How an entity/table was discovered. */
+export type EntityOrigin = 'typeorm' | 'prisma' | 'sequelize' | 'mongoose';
+
+/** An @Entity/model — one database table. */
 export interface DbEntityNode {
   id: string;
   snapshotId: string;
@@ -174,6 +183,8 @@ export interface DbEntityNode {
   /** owning module's row id (the module whose folder defines the entity) */
   moduleId: string | null;
   columns: EntityColumn[];
+  /** which ORM/schema this table came from (absent = legacy snapshot) */
+  origin?: EntityOrigin;
   /** github projects only — link to the defining line on github.com */
   sourceUrl?: string;
 }
@@ -187,10 +198,17 @@ export interface TableTouchMeta {
   files?: string[];
 }
 
+/** How a foreign-key edge was discovered. */
+export type FkOrigin = 'typeorm' | 'prisma' | 'sequelize' | 'mongoose' | 'sql' | 'db';
+
 /** Evidence on an `fk` edge (entity → entity). */
 export interface FkMeta {
-  /** relation property names, e.g. ["user"] */
+  /** relation property / FK column names, e.g. ["user"] */
   properties: string[];
+  /** where the relation was found; absent = legacy snapshot (treat as declared) */
+  origin?: FkOrigin;
+  /** true when the edge is a heuristic guess (e.g. an implicit `xxxId` column) */
+  inferred?: boolean;
 }
 
 /**
